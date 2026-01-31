@@ -1,0 +1,42 @@
+{
+  "name": "webmaxsocket",
+  "version": "1.0.0",
+  "description": "Node.js client for Max Messenger with QR code authentication",
+  "main": "index.js",
+  "scripts": {
+    "start": "node example.js",
+    "example": "node example.js"
+  },
+  "keywords": [
+    "max",
+    "messenger",
+    "max-messenger",
+    "oneme",
+    "api",
+    "userbot",
+    "selfbot",
+    "websocket",
+    "qr-code",
+    "qr-auth",
+    "bot",
+    "nodejs",
+    "commonjs"
+  ],
+  "author": "Tellarion",
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "files": [
+    "lib/",
+    "index.js",
+    "example.js",
+    "README.md"
+  ]
+}
+

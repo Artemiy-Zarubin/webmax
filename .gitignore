@@ -5,7 +5,6 @@ yarn-error.log
 
 # Sessions (содержат токены!)
 sessions/
-*.json
 
 # IDE
 .vscode/
