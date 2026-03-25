@@ -1,6 +1,6 @@
 {
 	"name": "webmax-ts",
-	"version": "2.1.0",
+	"version": "2.2.1",
 	"description": "Node.js client for Max Messenger with QR code authentication (TypeScript, ESM)",
 	"type": "module",
 	"main": "./dist/cjs/index.js",
@@ -39,12 +39,12 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/Artemiy-Zarubin/webmax.git"
+		"url": "git+https://github.com/Artemiy-Zarubin/webmax-ts.git"
 	},
 	"bugs": {
-		"url": "https://github.com/Artemiy-Zarubin/webmax/issues"
+		"url": "https://github.com/Artemiy-Zarubin/webmax-ts/issues"
 	},
-	"homepage": "https://github.com/Artemiy-Zarubin/webmax#readme",
+	"homepage": "https://github.com/Artemiy-Zarubin/webmax-ts#readme",
 	"dependencies": {
 		"qrcode-terminal": "^0.12.0",
 		"uuid": "^9.0.0",
@@ -52,6 +52,8 @@
 	},
 	"devDependencies": {
 		"@types/node": "^22.13.5",
+		"@types/uuid": "^10.0.0",
+		"@types/ws": "^8.18.1",
 		"typescript": "^5.7.3"
 	},
 	"engines": {

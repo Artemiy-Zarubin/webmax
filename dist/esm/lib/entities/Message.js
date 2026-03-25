@@ -1,45 +1,69 @@
 import User from './User.js';
+const isRecord = (value) => typeof value === 'object' && value !== null;
+const asId = (value) => {
+    if (typeof value === 'string' || typeof value === 'number') {
+        return value;
+    }
+    return null;
+};
+const getErrorMessage = (error) => {
+    if (error instanceof Error) {
+        return error.message;
+    }
+    return String(error);
+};
 /**
  * Класс представляющий сообщение
  */
 export default class Message {
     constructor(data, client) {
         this.client = client;
-        this.id = data.id || data.messageId || null;
-        this.cid = data.cid || null;
-        this.chatId = data.chatId || data.chat_id || null;
+        this.id = asId(data.id) || asId(data.messageId) || null;
+        this.cid = asId(data.cid) || null;
+        this.chatId = asId(data.chatId) || asId(data.chat_id) || null;
         // Обработка text: может быть строкой или объектом
         if (typeof data.text === 'string') {
             this.text = data.text;
         }
-        else if (typeof data.text === 'object' && data.text !== null) {
-            // Если text - объект, ищем текст внутри
-            this.text = data.text.text || JSON.stringify(data.text);
+        else if (isRecord(data.text)) {
+            const innerText = data.text.text;
+            this.text = typeof innerText === 'string' ? innerText : JSON.stringify(data.text);
+        }
+        else if (typeof data.message === 'string') {
+            this.text = data.message;
         }
         else {
-            this.text = data.message || '';
+            this.text = '';
         }
         // Обработка sender: может быть объектом User или просто ID
         if (data.sender) {
-            if (typeof data.sender === 'object') {
-                this.senderId = data.sender.id;
+            if (isRecord(data.sender)) {
+                this.senderId = asId(data.sender.id);
                 this.sender = new User(data.sender);
             }
-            else {
+            else if (typeof data.sender === 'string' || typeof data.sender === 'number') {
                 // Если sender - это просто ID (число)
                 this.senderId = data.sender;
                 this.sender = null; // Будет загружен позже при необходимости
             }
+            else {
+                this.senderId = null;
+                this.sender = null;
+            }
         }
         else {
-            this.senderId = data.senderId || data.sender_id || data.from_id || null;
+            this.senderId = asId(data.senderId) || asId(data.sender_id) || asId(data.from_id) || null;
             this.sender = null;
         }
-        this.timestamp = data.timestamp || data.time || Date.now();
-        this.type = data.type || 'text';
-        this.isEdited = data.isEdited || data.is_edited || false;
-        this.replyTo = data.replyTo || data.reply_to || null;
-        this.attachments = data.attaches || data.attachments || [];
+        this.timestamp = typeof data.timestamp === 'number' ? data.timestamp : typeof data.time === 'number' ? data.time : Date.now();
+        this.type = typeof data.type === 'string' ? data.type : 'text';
+        this.isEdited = Boolean(data.isEdited || data.is_edited);
+        this.replyTo = asId(data.replyTo) || asId(data.reply_to) || null;
+        this.attachments = Array.isArray(data.attaches)
+            ? data.attaches
+            : Array.isArray(data.attachments)
+                ? data.attachments
+                : [];
         this.rawData = data;
     }
     /**
@@ -51,7 +75,7 @@ export default class Message {
                 this.sender = await this.client.getUser(this.senderId);
             }
             catch (error) {
-                console.error('Ошибка загрузки информации об отправителе:', error);
+                console.error('Ошибка загрузки информации об отправителе:', getErrorMessage(error));
             }
         }
         return this.sender;
@@ -107,7 +131,8 @@ export default class Message {
      * Переслать сообщение
      */
     async forward(chatId) {
-        return await this.client.forwardMessage({
+        const forwarder = this.client;
+        return await forwarder.forwardMessage({
             messageId: this.id,
             fromChatId: this.chatId,
             toChatId: chatId,

@@ -12,6 +12,14 @@ const index_js_1 = require("./entities/index.js");
 const constants_js_1 = require("./constants.js");
 const opcodes_js_1 = require("./opcodes.js");
 const userAgent_js_1 = require("./userAgent.js");
+const isRecord = (value) => typeof value === 'object' && value !== null;
+const NOTIF_MSG_DELETE = opcodes_js_1.Opcode['NOTIF_MSG_DELETE'];
+const getErrorMessage = (error) => {
+    if (error instanceof Error) {
+        return error.message;
+    }
+    return String(error);
+};
 /**
  * Основной клиент для работы с API Max
  */
@@ -163,7 +171,7 @@ class WebMaxClient extends events_1.EventEmitter {
     async requestQR() {
         console.log('Запрос QR-кода для авторизации...');
         const response = await this.sendAndWait(opcodes_js_1.Opcode.GET_QR, {});
-        if (response.payload && response.payload.error) {
+        if (isRecord(response.payload) && response.payload.error) {
             throw new Error(`QR request error: ${JSON.stringify(response.payload.error)}`);
         }
         return response.payload;
@@ -173,7 +181,7 @@ class WebMaxClient extends events_1.EventEmitter {
      */
     async checkQRStatus(trackId) {
         const response = await this.sendAndWait(opcodes_js_1.Opcode.GET_QR_STATUS, { trackId });
-        if (response.payload && response.payload.error) {
+        if (isRecord(response.payload) && response.payload.error) {
             throw new Error(`QR status error: ${JSON.stringify(response.payload.error)}`);
         }
         return response.payload;
@@ -183,7 +191,7 @@ class WebMaxClient extends events_1.EventEmitter {
      */
     async loginByQR(trackId) {
         const response = await this.sendAndWait(opcodes_js_1.Opcode.LOGIN_BY_QR, { trackId });
-        if (response.payload && response.payload.error) {
+        if (isRecord(response.payload) && response.payload.error) {
             throw new Error(`QR login error: ${JSON.stringify(response.payload.error)}`);
         }
         return response.payload;
@@ -200,10 +208,10 @@ class WebMaxClient extends events_1.EventEmitter {
                 throw new Error('QR-код истек. Перезапустите бот для получения нового.');
             }
             // Ждем указанный интервал
-            await new Promise(resolve => setTimeout(resolve, pollingInterval));
+            await new Promise((resolve) => setTimeout(resolve, pollingInterval));
             try {
                 const statusResponse = await this.checkQRStatus(trackId);
-                if (statusResponse.status && statusResponse.status.loginAvailable) {
+                if (isRecord(statusResponse) && isRecord(statusResponse.status) && statusResponse.status.loginAvailable) {
                     console.log('✅ QR-код отсканирован!');
                     return true;
                 }
@@ -211,7 +219,7 @@ class WebMaxClient extends events_1.EventEmitter {
                 process.stdout.write('.');
             }
             catch (error) {
-                console.error('\nОшибка при проверке статуса QR:', error.message);
+                console.error('\nОшибка при проверке статуса QR:', getErrorMessage(error));
                 throw error;
             }
         }
@@ -223,7 +231,7 @@ class WebMaxClient extends events_1.EventEmitter {
         try {
             console.log('Запрос QR-кода для авторизации...');
             const qrData = await this.requestQR();
-            if (!qrData.qrLink || !qrData.trackId || !qrData.pollingInterval || !qrData.expiresAt) {
+            if (!isRecord(qrData) || !qrData.qrLink || !qrData.trackId || !qrData.pollingInterval || !qrData.expiresAt) {
                 throw new Error('Неполные данные QR-кода от сервера');
             }
             console.log('\n' + '='.repeat(70));
@@ -233,19 +241,19 @@ class WebMaxClient extends events_1.EventEmitter {
             console.log('➡️  Настройки → Устройства → Подключить устройство');
             console.log('📸 Отсканируйте QR-код ниже:\n');
             // Отображаем QR-код в консоли
-            qrcode_terminal_1.default.generate(qrData.qrLink, { small: true }, (qrCode) => {
+            qrcode_terminal_1.default.generate(String(qrData.qrLink), { small: true }, (qrCode) => {
                 console.log(qrCode);
             });
             console.log('\n💡 Или откройте ссылку: ' + qrData.qrLink);
             console.log('='.repeat(70) + '\n');
             // Опрашиваем статус
-            await this.pollQRStatus(qrData.trackId, qrData.pollingInterval, qrData.expiresAt);
+            await this.pollQRStatus(String(qrData.trackId), Number(qrData.pollingInterval), Number(qrData.expiresAt));
             // Получаем токен
             console.log('\n\nПолучение токена авторизации...');
-            const loginData = await this.loginByQR(qrData.trackId);
-            const loginAttrs = loginData.tokenAttrs && loginData.tokenAttrs.LOGIN;
-            const token = loginAttrs && loginAttrs.token;
-            if (!token) {
+            const loginData = await this.loginByQR(String(qrData.trackId));
+            const loginAttrs = isRecord(loginData) && isRecord(loginData.tokenAttrs) ? loginData.tokenAttrs.LOGIN : undefined;
+            const token = isRecord(loginAttrs) ? loginAttrs.token : undefined;
+            if (typeof token !== 'string' || !token) {
                 throw new Error('Токен не получен из ответа');
             }
             this.session.set('token', token);
@@ -288,19 +296,21 @@ class WebMaxClient extends events_1.EventEmitter {
             userAgent: this.userAgent.toJSON()
         };
         const response = await this.sendAndWait(opcodes_js_1.Opcode.LOGIN, payload);
-        if (response.payload && response.payload.error) {
+        if (isRecord(response.payload) && response.payload.error) {
             throw new Error(`Sync error: ${JSON.stringify(response.payload.error)}`);
         }
         // Сохраняем информацию о пользователе
-        const responsePayload = response.payload || {};
+        const responsePayload = isRecord(response.payload) ? response.payload : {};
         // Извлекаем данные пользователя из profile.contact
-        if (responsePayload.profile && responsePayload.profile.contact) {
-            const contact = responsePayload.profile.contact;
-            const name = contact.names && contact.names.length > 0 ? contact.names[0] : {};
+        const profile = isRecord(responsePayload.profile) ? responsePayload.profile : null;
+        const contact = profile && isRecord(profile.contact) ? profile.contact : null;
+        if (contact) {
+            const names = Array.isArray(contact.names) ? contact.names : [];
+            const name = names.length > 0 && isRecord(names[0]) ? names[0] : {};
             const userData = {
                 id: contact.id,
-                firstname: name.firstName || name.name || '',
-                lastname: name.lastName || '',
+                firstname: (typeof name.firstName === 'string' && name.firstName) || (typeof name.name === 'string' && name.name) || '',
+                lastname: (typeof name.lastName === 'string' && name.lastName) || '',
                 phone: contact.phone,
                 avatar: contact.baseUrl || contact.baseRawUrl,
                 photoId: contact.photoId,
@@ -322,14 +332,14 @@ class WebMaxClient extends events_1.EventEmitter {
         try {
             console.log('📱 Запрос профиля пользователя...');
             const response = await this.sendAndWait(opcodes_js_1.Opcode.PROFILE, {});
-            if (response.payload && response.payload.user) {
+            if (isRecord(response.payload) && isRecord(response.payload.user)) {
                 this.me = new index_js_1.User(response.payload.user);
                 const name = this.me.fullname || this.me.firstname || 'User';
                 console.log(`✅ Профиль загружен: ${name} (ID: ${this.me.id})`);
             }
         }
         catch (error) {
-            console.error('⚠️ Не удалось загрузить профиль:', error.message);
+            console.error('⚠️ Не удалось загрузить профиль:', getErrorMessage(error));
         }
     }
     /**
@@ -365,7 +375,7 @@ class WebMaxClient extends events_1.EventEmitter {
      */
     async connect() {
         if (this.ws && this.isConnected) {
-            return;
+            return Promise.resolve();
         }
         return new Promise((resolve, reject) => {
             const headers = {
@@ -415,7 +425,7 @@ class WebMaxClient extends events_1.EventEmitter {
             userAgent: this.userAgent.toJSON()
         };
         const response = await this.sendAndWait(opcodes_js_1.Opcode.SESSION_INIT, payload);
-        if (response.payload && response.payload.error) {
+        if (isRecord(response.payload) && response.payload.error) {
             throw new Error(`Handshake error: ${JSON.stringify(response.payload.error)}`);
         }
         console.log('Handshake выполнен успешно');
@@ -441,31 +451,32 @@ class WebMaxClient extends events_1.EventEmitter {
      */
     async handleMessage(data) {
         try {
-            const message = JSON.parse(data.toString());
+            const raw = typeof data === 'string' ? data : data.toString();
+            const message = JSON.parse(raw);
             // Отладочное логирование (раскомментируйте при необходимости)
             // if (message.opcode !== Opcode.PING) {
             //   console.log(`📥 Получено: ${getOpcodeName(message.opcode)} (seq=${message.seq})`);
             // }
             // Обработка ответов на запросы по seq
-            if (message.seq && this.pendingRequests.has(message.seq)) {
+            if (typeof message.seq === 'number' && this.pendingRequests.has(message.seq)) {
                 const pending = this.pendingRequests.get(message.seq);
                 this.pendingRequests.delete(message.seq);
-                if (pending.timeoutId) {
+                if (pending?.timeoutId) {
                     clearTimeout(pending.timeoutId);
                 }
-                pending.resolve(message);
+                pending?.resolve(message);
                 return;
             }
             // Обработка уведомлений
             switch (message.opcode) {
                 case opcodes_js_1.Opcode.NOTIF_MESSAGE:
-                    await this.handleNewMessage(message.payload);
+                    await this.handleNewMessage(message.payload || {});
                     break;
-                case opcodes_js_1.Opcode.NOTIF_MSG_DELETE:
-                    await this.handleRemovedMessage(message.payload);
+                case NOTIF_MSG_DELETE:
+                    await this.handleRemovedMessage(message.payload || {});
                     break;
                 case opcodes_js_1.Opcode.NOTIF_CHAT:
-                    await this.handleChatAction(message.payload);
+                    await this.handleChatAction(message.payload || {});
                     break;
                 case opcodes_js_1.Opcode.PING:
                     // Отвечаем на ping (без логирования)
@@ -485,6 +496,9 @@ class WebMaxClient extends events_1.EventEmitter {
      */
     async sendPong() {
         try {
+            if (!this.ws) {
+                return;
+            }
             const message = this.makeMessage(opcodes_js_1.Opcode.PING, {});
             this.ws.send(JSON.stringify(message));
         }
@@ -498,9 +512,9 @@ class WebMaxClient extends events_1.EventEmitter {
     async handleNewMessage(data) {
         // Извлекаем данные сообщения из правильного места
         // Структура: { chatId, message: { sender, id, text, ... } }
-        const messageData = data.message || data;
+        const messageData = isRecord(data.message) ? data.message : data;
         // Добавляем chatId если его нет в messageData
-        if (!messageData.chatId && data.chatId) {
+        if (!('chatId' in messageData) && data.chatId) {
             messageData.chatId = data.chatId;
         }
         const message = new index_js_1.Message(messageData, this);
@@ -542,13 +556,14 @@ class WebMaxClient extends events_1.EventEmitter {
      */
     sendAndWait(opcode, payload, cmd = 0, timeout = 20000) {
         return new Promise((resolve, reject) => {
-            if (!this.isConnected) {
+            if (!this.isConnected || !this.ws) {
                 reject(new Error('WebSocket не подключен'));
                 return;
             }
             const message = this.makeMessage(opcode, payload, cmd);
             const seq = message.seq;
-            this.pendingRequests.set(seq, { resolve, reject });
+            const pendingRequest = { resolve, reject };
+            this.pendingRequests.set(seq, pendingRequest);
             // Таймаут для запроса
             const timeoutId = setTimeout(() => {
                 if (this.pendingRequests.has(seq)) {
@@ -557,7 +572,7 @@ class WebMaxClient extends events_1.EventEmitter {
                 }
             }, timeout);
             // Сохраняем timeoutId чтобы можно было отменить
-            this.pendingRequests.get(seq).timeoutId = timeoutId;
+            pendingRequest.timeoutId = timeoutId;
             // Отладочное логирование (раскомментируйте при необходимости)
             // if (opcode !== Opcode.PING) {
             //   console.log(`📤 Отправка: ${getOpcodeName(opcode)} (seq=${seq})`);
@@ -585,10 +600,10 @@ class WebMaxClient extends events_1.EventEmitter {
             notify: false
         };
         const response = await this.sendAndWait(opcodes_js_1.Opcode.MSG_SEND, payload);
-        if (response.payload && response.payload.message) {
+        if (isRecord(response.payload) && isRecord(response.payload.message)) {
             return new index_js_1.Message(response.payload.message, this);
         }
-        return response.payload;
+        return response.payload || null;
     }
     /**
      * Редактирование сообщения
@@ -603,10 +618,10 @@ class WebMaxClient extends events_1.EventEmitter {
             attaches: []
         };
         const response = await this.sendAndWait(opcodes_js_1.Opcode.MSG_EDIT, payload);
-        if (response.payload && response.payload.message) {
+        if (isRecord(response.payload) && isRecord(response.payload.message)) {
             return new index_js_1.Message(response.payload.message, this);
         }
-        return response.payload;
+        return response.payload || null;
     }
     /**
      * Удаление сообщения
@@ -629,14 +644,18 @@ class WebMaxClient extends events_1.EventEmitter {
             contactIds: [userId]
         };
         const response = await this.sendAndWait(opcodes_js_1.Opcode.CONTACT_INFO, payload);
-        if (response.payload && response.payload.contacts && response.payload.contacts.length > 0) {
+        if (isRecord(response.payload) && Array.isArray(response.payload.contacts) && response.payload.contacts.length > 0) {
             const contact = response.payload.contacts[0];
+            if (!isRecord(contact)) {
+                return null;
+            }
             // Преобразуем структуру контакта в понятный User формат
-            const name = contact.names && contact.names.length > 0 ? contact.names[0] : {};
+            const names = Array.isArray(contact.names) ? contact.names : [];
+            const name = names.length > 0 && isRecord(names[0]) ? names[0] : {};
             const userData = {
                 id: contact.id,
-                firstname: name.firstName || name.name || '',
-                lastname: name.lastName || '',
+                firstname: (typeof name.firstName === 'string' && name.firstName) || (typeof name.name === 'string' && name.name) || '',
+                lastname: (typeof name.lastName === 'string' && name.lastName) || '',
                 phone: contact.phone,
                 avatar: contact.baseUrl || contact.baseRawUrl,
                 photoId: contact.photoId,
@@ -654,7 +673,10 @@ class WebMaxClient extends events_1.EventEmitter {
             marker: marker
         };
         const response = await this.sendAndWait(opcodes_js_1.Opcode.CHATS_LIST, payload);
-        return response.payload && response.payload.chats ? response.payload.chats : [];
+        if (isRecord(response.payload) && Array.isArray(response.payload.chats)) {
+            return response.payload.chats;
+        }
+        return [];
     }
     /**
      * Получение истории сообщений
@@ -668,26 +690,50 @@ class WebMaxClient extends events_1.EventEmitter {
             getMessages: true
         };
         const response = await this.sendAndWait(opcodes_js_1.Opcode.CHAT_HISTORY, payload);
-        const messages = response.payload && response.payload.messages ? response.payload.messages : [];
-        return messages.map(msg => new index_js_1.Message(msg, this));
+        const messages = isRecord(response.payload) && Array.isArray(response.payload.messages)
+            ? response.payload.messages
+            : [];
+        return messages.filter(isRecord).map((msg) => new index_js_1.Message(msg, this));
     }
-    /**
-     * Выполнение зарегистрированных обработчиков
-     */
-    async triggerHandlers(eventType, data = null) {
-        const handlers = this.handlers[eventType] || [];
-        for (const handler of handlers) {
-            try {
-                if (data !== null) {
-                    await handler(data);
-                }
-                else {
-                    await handler();
-                }
+    async triggerHandlers(eventType, data) {
+        try {
+            switch (eventType) {
+                case constants_js_1.EventTypes.START:
+                    for (const handler of this.handlers[constants_js_1.EventTypes.START]) {
+                        await handler();
+                    }
+                    break;
+                case constants_js_1.EventTypes.DISCONNECT:
+                    for (const handler of this.handlers[constants_js_1.EventTypes.DISCONNECT]) {
+                        await handler();
+                    }
+                    break;
+                case constants_js_1.EventTypes.MESSAGE:
+                    for (const handler of this.handlers[constants_js_1.EventTypes.MESSAGE]) {
+                        await handler(data);
+                    }
+                    break;
+                case constants_js_1.EventTypes.MESSAGE_REMOVED:
+                    for (const handler of this.handlers[constants_js_1.EventTypes.MESSAGE_REMOVED]) {
+                        await handler(data);
+                    }
+                    break;
+                case constants_js_1.EventTypes.CHAT_ACTION:
+                    for (const handler of this.handlers[constants_js_1.EventTypes.CHAT_ACTION]) {
+                        await handler(data);
+                    }
+                    break;
+                case constants_js_1.EventTypes.ERROR:
+                    for (const handler of this.handlers[constants_js_1.EventTypes.ERROR]) {
+                        await handler(data);
+                    }
+                    break;
+                default:
+                    break;
             }
-            catch (error) {
-                console.error(`Ошибка в обработчике ${eventType}:`, error);
-            }
+        }
+        catch (error) {
+            console.error(`Ошибка в обработчике ${eventType}:`, error);
         }
     }
     /**

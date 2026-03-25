@@ -1,9 +1,20 @@
+import type WebMaxClient from '../client.js';
 import User from './User.js';
+type UnknownRecord = Record<string, unknown>;
+type MessageReplyOptions = {
+    text?: string;
+    cid?: number;
+    [key: string]: unknown;
+};
+type MessageEditOptions = {
+    text?: string;
+    [key: string]: unknown;
+};
 /**
  * Класс представляющий сообщение
  */
 export default class Message {
-    client: any;
+    client: WebMaxClient;
     id: string | number | null;
     cid: string | number | null;
     chatId: string | number | null;
@@ -14,13 +25,13 @@ export default class Message {
     type: string;
     isEdited: boolean;
     replyTo: string | number | null;
-    attachments: any[];
-    rawData: Record<string, any>;
-    constructor(data: Record<string, any>, client: any);
+    attachments: unknown[];
+    rawData: UnknownRecord;
+    constructor(data: UnknownRecord, client: WebMaxClient);
     /**
      * Получить информацию об отправителе
      */
-    fetchSender(): Promise<User>;
+    fetchSender(): Promise<User | null>;
     /**
      * Получить имя отправителя
      */
@@ -28,26 +39,23 @@ export default class Message {
     /**
      * Ответить на сообщение
      */
-    reply(options: string | {
-        text?: string;
-        cid?: number;
-        [key: string]: any;
-    }): Promise<any>;
+    reply(options: string | MessageReplyOptions): Promise<Message | {
+        [x: string]: unknown;
+    } | null>;
     /**
      * Редактировать сообщение
      */
-    edit(options: string | {
-        text?: string;
-        [key: string]: any;
-    }): Promise<any>;
+    edit(options: string | MessageEditOptions): Promise<Message | {
+        [x: string]: unknown;
+    } | null>;
     /**
      * Удалить сообщение
      */
-    delete(): Promise<any>;
+    delete(): Promise<boolean>;
     /**
      * Переслать сообщение
      */
-    forward(chatId: string | number): Promise<any>;
+    forward(chatId: string | number): Promise<unknown>;
     /**
      * Возвращает строковое представление сообщения
      */
@@ -56,27 +64,28 @@ export default class Message {
      * Возвращает JSON представление
      */
     toJSON(): {
-        id: string | number;
-        cid: string | number;
-        chatId: string | number;
+        id: string | number | null;
+        cid: string | number | null;
+        chatId: string | number | null;
         text: string;
-        senderId: string | number;
+        senderId: string | number | null;
         sender: {
-            id: string | number;
+            id: string | number | null;
             firstname: string;
             lastname: string;
-            username: string;
-            phone: string;
-            avatar: string;
-            photoId: string | number;
+            username: string | null;
+            phone: string | null;
+            avatar: string | null;
+            photoId: string | number | null;
             status: string;
             bio: string;
-        };
+        } | null;
         timestamp: number;
         type: string;
         isEdited: boolean;
-        replyTo: string | number;
-        attachments: any[];
+        replyTo: string | number | null;
+        attachments: unknown[];
     };
 }
+export {};
 //# sourceMappingURL=Message.d.ts.map

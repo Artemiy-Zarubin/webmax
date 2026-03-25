@@ -1,8 +1,36 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import SessionManager from './session.js';
-import { User } from './entities/index.js';
+import { Message, ChatAction, User } from './entities/index.js';
+import { EventTypes } from './constants.js';
 import { UserAgentPayload } from './userAgent.js';
+type UnknownRecord = Record<string, unknown>;
+type StartHandler = () => void | Promise<void>;
+type MessageHandler = (message: Message) => void | Promise<void>;
+type MessageRemovedHandler = (message: Message) => void | Promise<void>;
+type ChatActionHandler = (action: ChatAction) => void | Promise<void>;
+type ErrorHandler = (error: unknown) => void | Promise<void>;
+type DisconnectHandler = () => void | Promise<void>;
+type PendingRequest = {
+    resolve: (value: ServerMessage) => void;
+    reject: (reason?: unknown) => void;
+    timeoutId?: NodeJS.Timeout;
+};
+interface ServerMessage {
+    ver?: number;
+    cmd?: number;
+    seq?: number;
+    opcode: number;
+    payload?: UnknownRecord | null;
+    [key: string]: unknown;
+}
+interface ClientMessage {
+    ver: number;
+    cmd: number;
+    seq: number;
+    opcode: number;
+    payload: UnknownRecord;
+}
 export interface WebMaxClientOptions {
     phone?: string | null;
     name?: string;
@@ -13,13 +41,27 @@ export interface WebMaxClientOptions {
     deviceId?: string;
     maxReconnectAttempts?: number;
     reconnectDelay?: number;
-    [key: string]: any;
+    [key: string]: unknown;
 }
-type PendingRequest = {
-    resolve: (value: any) => void;
-    reject: (reason?: any) => void;
-    timeoutId?: NodeJS.Timeout;
-};
+export interface SendMessageOptions {
+    chatId: string | number;
+    text?: string;
+    cid?: number;
+    replyTo?: string | number | null;
+    attachments?: unknown[];
+    [key: string]: unknown;
+}
+export interface EditMessageOptions {
+    messageId: string | number;
+    chatId: string | number;
+    text?: string;
+    [key: string]: unknown;
+}
+export interface DeleteMessageOptions {
+    messageId: string | number | Array<string | number>;
+    chatId: string | number;
+    forMe?: boolean;
+}
 /**
  * Основной клиент для работы с API Max
  */
@@ -40,31 +82,38 @@ declare class WebMaxClient extends EventEmitter {
     reconnectDelay: number;
     seq: number;
     ver: number;
-    handlers: Record<string, Array<Function>>;
-    messageQueue: any[];
+    handlers: {
+        [EventTypes.START]: StartHandler[];
+        [EventTypes.MESSAGE]: MessageHandler[];
+        [EventTypes.MESSAGE_REMOVED]: MessageRemovedHandler[];
+        [EventTypes.CHAT_ACTION]: ChatActionHandler[];
+        [EventTypes.ERROR]: ErrorHandler[];
+        [EventTypes.DISCONNECT]: DisconnectHandler[];
+    };
+    messageQueue: unknown[];
     pendingRequests: Map<number, PendingRequest>;
     _token?: string;
     constructor(options?: WebMaxClientOptions);
     /**
      * Регистрация обработчика события start
      */
-    onStart(handler: any): any;
+    onStart(handler?: StartHandler): StartHandler | ((fn: StartHandler) => StartHandler);
     /**
      * Регистрация обработчика сообщений
      */
-    onMessage(handler: any): any;
+    onMessage(handler?: MessageHandler): MessageHandler | ((fn: MessageHandler) => MessageHandler);
     /**
      * Регистрация обработчика удаленных сообщений
      */
-    onMessageRemoved(handler: any): any;
+    onMessageRemoved(handler?: MessageRemovedHandler): MessageRemovedHandler | ((fn: MessageRemovedHandler) => MessageRemovedHandler);
     /**
      * Регистрация обработчика действий в чате
      */
-    onChatAction(handler: any): any;
+    onChatAction(handler?: ChatActionHandler): ChatActionHandler | ((fn: ChatActionHandler) => ChatActionHandler);
     /**
      * Регистрация обработчика ошибок
      */
-    onError(handler: any): any;
+    onError(handler?: ErrorHandler): ErrorHandler | ((fn: ErrorHandler) => ErrorHandler);
     /**
      * Запуск клиента
      */
@@ -72,19 +121,19 @@ declare class WebMaxClient extends EventEmitter {
     /**
      * Запрос QR-кода для авторизации (только для device_type="WEB")
      */
-    requestQR(): Promise<any>;
+    requestQR(): Promise<UnknownRecord | null | undefined>;
     /**
      * Проверка статуса QR-кода
      */
-    checkQRStatus(trackId: any): Promise<any>;
+    checkQRStatus(trackId: string): Promise<UnknownRecord | null | undefined>;
     /**
      * Завершение авторизации по QR-коду
      */
-    loginByQR(trackId: any): Promise<any>;
+    loginByQR(trackId: string): Promise<UnknownRecord | null | undefined>;
     /**
      * Опрос статуса QR-кода
      */
-    pollQRStatus(trackId: any, pollingInterval: any, expiresAt: any): Promise<boolean>;
+    pollQRStatus(trackId: string, pollingInterval: number, expiresAt: number): Promise<boolean>;
     /**
      * Авторизация через QR-код
      */
@@ -96,7 +145,7 @@ declare class WebMaxClient extends EventEmitter {
     /**
      * Синхронизация с сервером (получение данных о пользователе, чатах и т.д.)
      */
-    sync(): Promise<any>;
+    sync(): Promise<UnknownRecord>;
     /**
      * Получение информации о текущем пользователе
      */
@@ -112,7 +161,7 @@ declare class WebMaxClient extends EventEmitter {
     /**
      * Handshake после подключения
      */
-    handshake(): Promise<any>;
+    handshake(): Promise<ServerMessage>;
     /**
      * Обработка переподключения
      */
@@ -120,7 +169,7 @@ declare class WebMaxClient extends EventEmitter {
     /**
      * Обработка входящих сообщений
      */
-    handleMessage(data: any): Promise<void>;
+    handleMessage(data: WebSocket.RawData): Promise<void>;
     /**
      * Отправка pong ответа на ping
      */
@@ -128,57 +177,56 @@ declare class WebMaxClient extends EventEmitter {
     /**
      * Обработка нового сообщения
      */
-    handleNewMessage(data: any): Promise<void>;
+    handleNewMessage(data: UnknownRecord): Promise<void>;
     /**
      * Обработка удаленного сообщения
      */
-    handleRemovedMessage(data: any): Promise<void>;
+    handleRemovedMessage(data: UnknownRecord): Promise<void>;
     /**
      * Обработка действия в чате
      */
-    handleChatAction(data: any): Promise<void>;
+    handleChatAction(data: UnknownRecord): Promise<void>;
     /**
      * Создает сообщение в протоколе Max API
      */
-    makeMessage(opcode: any, payload: any, cmd?: number): {
-        ver: number;
-        cmd: number;
-        seq: number;
-        opcode: any;
-        payload: any;
-    };
+    makeMessage(opcode: number, payload: UnknownRecord, cmd?: number): ClientMessage;
     /**
      * Отправка запроса через WebSocket и ожидание ответа
      */
-    sendAndWait(opcode: number, payload: any, cmd?: number, timeout?: number): Promise<any>;
+    sendAndWait(opcode: number, payload: UnknownRecord, cmd?: number, timeout?: number): Promise<ServerMessage>;
     /**
      * Отправка сообщения
      */
-    sendMessage(options: any): Promise<any>;
+    sendMessage(options: SendMessageOptions): Promise<Message | UnknownRecord | null>;
     /**
      * Редактирование сообщения
      */
-    editMessage(options: any): Promise<any>;
+    editMessage(options: EditMessageOptions): Promise<Message | UnknownRecord | null>;
     /**
      * Удаление сообщения
      */
-    deleteMessage(options: any): Promise<boolean>;
+    deleteMessage(options: DeleteMessageOptions): Promise<boolean>;
     /**
      * Получение информации о пользователе по ID
      */
-    getUser(userId: any): Promise<User>;
+    getUser(userId: string | number): Promise<User | null>;
     /**
      * Получение списка чатов
      */
-    getChats(marker?: number): Promise<any>;
+    getChats(marker?: number): Promise<any[]>;
     /**
      * Получение истории сообщений
      */
-    getHistory(chatId: any, from?: number, backward?: number, forward?: number): Promise<any>;
+    getHistory(chatId: string | number, from?: number, backward?: number, forward?: number): Promise<Message[]>;
     /**
      * Выполнение зарегистрированных обработчиков
      */
-    triggerHandlers(eventType: any, data?: any): Promise<void>;
+    triggerHandlers(eventType: typeof EventTypes.START): Promise<void>;
+    triggerHandlers(eventType: typeof EventTypes.DISCONNECT): Promise<void>;
+    triggerHandlers(eventType: typeof EventTypes.MESSAGE, data: Message): Promise<void>;
+    triggerHandlers(eventType: typeof EventTypes.MESSAGE_REMOVED, data: Message): Promise<void>;
+    triggerHandlers(eventType: typeof EventTypes.CHAT_ACTION, data: ChatAction): Promise<void>;
+    triggerHandlers(eventType: typeof EventTypes.ERROR, data: unknown): Promise<void>;
     /**
      * Остановка клиента
      */

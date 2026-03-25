@@ -5,4 +5,4 @@
  * @module webmaxsocket
  */
 
-export * from './dist/index.js';
+export * from './dist/esm/index.js';

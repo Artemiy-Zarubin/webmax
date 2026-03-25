@@ -1,3 +1,4 @@
+type UnknownRecord = Record<string, unknown>;
 /**
  * Класс представляющий пользователя
  */
@@ -11,8 +12,8 @@ export default class User {
     photoId: string | number | null;
     status: string;
     bio: string;
-    rawData: Record<string, unknown>;
-    constructor(data: Record<string, any>);
+    rawData: UnknownRecord;
+    constructor(data: UnknownRecord);
     /**
      * Возвращает полное имя пользователя
      */
@@ -25,15 +26,16 @@ export default class User {
      * Возвращает JSON представление
      */
     toJSON(): {
-        id: string | number;
+        id: string | number | null;
         firstname: string;
         lastname: string;
-        username: string;
-        phone: string;
-        avatar: string;
-        photoId: string | number;
+        username: string | null;
+        phone: string | null;
+        avatar: string | null;
+        photoId: string | number | null;
         status: string;
         bio: string;
     };
 }
+export {};
 //# sourceMappingURL=User.d.ts.map

@@ -1,3 +1,19 @@
+type UnknownRecord = Record<string, unknown>;
+
+const asId = (value: unknown): string | number | null => {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return value;
+  }
+  return null;
+};
+
+const asString = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return null;
+};
+
 /**
  * Класс представляющий пользователя
  */
@@ -11,18 +27,18 @@ export default class User {
   photoId: string | number | null;
   status: string;
   bio: string;
-  rawData: Record<string, unknown>;
+  rawData: UnknownRecord;
 
-  constructor(data: Record<string, any>) {
-    this.id = data.id || data.userId || data.contactId || null;
-    this.firstname = data.firstname || data.firstName || data.first_name || '';
-    this.lastname = data.lastname || data.lastName || data.last_name || '';
-    this.username = data.username || data.nick || null;
-    this.phone = data.phone || null;
-    this.avatar = data.avatar || data.baseUrl || data.baseRawUrl || null;
-    this.photoId = data.photoId || null;
-    this.status = data.status || 'online';
-    this.bio = data.bio || data.description || '';
+  constructor(data: UnknownRecord) {
+    this.id = asId(data.id) || asId(data.userId) || asId(data.contactId) || null;
+    this.firstname = asString(data.firstname) || asString(data.firstName) || asString(data.first_name) || '';
+    this.lastname = asString(data.lastname) || asString(data.lastName) || asString(data.last_name) || '';
+    this.username = asString(data.username) || asString(data.nick) || null;
+    this.phone = asString(data.phone) || null;
+    this.avatar = asString(data.avatar) || asString(data.baseUrl) || asString(data.baseRawUrl) || null;
+    this.photoId = asId(data.photoId) || null;
+    this.status = asString(data.status) || 'online';
+    this.bio = asString(data.bio) || asString(data.description) || '';
     this.rawData = data;
   }
 

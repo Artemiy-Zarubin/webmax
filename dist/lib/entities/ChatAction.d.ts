@@ -1,16 +1,18 @@
+import type WebMaxClient from '../client.js';
 import User from './User.js';
+type UnknownRecord = Record<string, unknown>;
 /**
  * Класс представляющий действие в чате
  */
 export default class ChatAction {
-    client: any;
+    client: WebMaxClient;
     type: string | null;
     chatId: string | number | null;
     userId: string | number | null;
     user: User | null;
     timestamp: number;
-    rawData: Record<string, any>;
-    constructor(data: Record<string, any>, client: any);
+    rawData: UnknownRecord;
+    constructor(data: UnknownRecord, client: WebMaxClient);
     /**
      * Возвращает строковое представление действия
      */
@@ -19,21 +21,22 @@ export default class ChatAction {
      * Возвращает JSON представление
      */
     toJSON(): {
-        type: string;
-        chatId: string | number;
-        userId: string | number;
+        type: string | null;
+        chatId: string | number | null;
+        userId: string | number | null;
         user: {
-            id: string | number;
+            id: string | number | null;
             firstname: string;
             lastname: string;
-            username: string;
-            phone: string;
-            avatar: string;
-            photoId: string | number;
+            username: string | null;
+            phone: string | null;
+            avatar: string | null;
+            photoId: string | number | null;
             status: string;
             bio: string;
-        };
+        } | null;
         timestamp: number;
     };
 }
+export {};
 //# sourceMappingURL=ChatAction.d.ts.map
