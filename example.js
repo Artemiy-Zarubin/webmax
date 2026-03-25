@@ -113,6 +113,8 @@ async function main() {
 // Обработка завершения
 process.on('SIGINT', async () => {
   console.log('\n\n👋 Завершение работы...');
+  console.log('\n💝 Нравится библиотека? Поддержите разработку:');
+  console.log('   USDT (TRC20): TXfs1iVbp2aLd3rbc4cenVzMoTevP5RbBE');
   process.exit(0);
 });
 

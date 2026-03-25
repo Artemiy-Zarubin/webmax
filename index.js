@@ -6,6 +6,7 @@
  */
 
 const WebMaxClient = require('./lib/client');
+const { MaxSocketTransport } = require('./lib/socketTransport');
 const { User, Message, ChatAction } = require('./lib/entities');
 const { ChatActions, EventTypes, MessageTypes } = require('./lib/constants');
 const { Opcode, getOpcodeName } = require('./lib/opcodes');
@@ -13,6 +14,7 @@ const { UserAgentPayload } = require('./lib/userAgent');
 
 module.exports = {
   WebMaxClient,
+  MaxSocketTransport,
   User,
   Message,
   ChatAction,

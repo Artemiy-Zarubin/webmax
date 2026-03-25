@@ -2,13 +2,15 @@
 
 ## 📖 Описание / Description
 
-**WebMaxSocket** — async Node.js библиотека для работы с внутренним API мессенджера Max. Позволяет создавать WebSocket соединение с **QR-кодом авторизацией**.
+**WebMaxSocket** — async Node.js библиотека для работы с внутренним API мессенджера Max. Поддерживает **QR-код авторизацию**, **Token авторизацию**, и работу через **WebSocket** (WEB) или **TCP Socket** (IOS/ANDROID).
 
 ## ✨ Особенности / Features
 
 - ✅ **QR-код авторизация** / QR code authentication  
-- ✅ **WebSocket соединение** / WebSocket connection
+- ✅ **Token авторизация** / Token authentication
+- ✅ **Два транспорта:** WebSocket (WEB) и TCP Socket (IOS/ANDROID)
 - ✅ **Автоматическое сохранение сессий** / Automatic session storage
+- ✅ **Автовыбор транспорта** после QR-авторизации (переход на TCP)
 - ✅ **Отправка и получение сообщений** / Send and receive messages
 - ✅ **Редактирование и удаление сообщений** / Edit and delete messages
 - ✅ **Event-driven архитектура** / Event-driven architecture
@@ -20,6 +22,16 @@
 ```bash
 npm install webmaxsocket
 ```
+
+### Зависимости для Socket транспорта (IOS/ANDROID)
+
+Для работы с TCP Socket транспортом требуется библиотека `lz4`. Если при установке возникают проблемы с `node-gyp`:
+
+```bash
+npm install lz4 --ignore-scripts
+```
+
+**Примечание:** Для обычной QR-авторизации (WEB) дополнительные зависимости не нужны. Socket транспорт используется только после сохранения сессии или при явном указании `deviceType: 'IOS'`/`'ANDROID'`.
 
 ## 🚀 Быстрый старт / Quick Start
 
@@ -63,9 +75,9 @@ main().catch(console.error);
 
 ### Авторизация / Authentication
 
-При первом запуске вы увидите QR-код в консоли:
+#### Способ 1: QR-код (рекомендуется для первого запуска)
 
-On first run, you'll see a QR code in the console:
+При первом запуске вы увидите QR-код в консоли:
 
 ```
 🔐 АВТОРИЗАЦИЯ ЧЕРЕЗ QR-КОД
@@ -76,15 +88,46 @@ On first run, you'll see a QR code in the console:
 📸 Отсканируйте QR-код
 
 █████████████████████████████
-█████████████████████████████
-████ ▄▄▄▄▄ █▀█ █▄▄█ ▄▄▄▄▄ ████
-████ █   █ █▀▀▀█ ▄█ █   █ ████
 ...
 ```
 
-После сканирования токен сохраняется автоматически.
+После сканирования:
+- Токен и clientSessionId сохраняются автоматически
+- При следующем запуске клиент **автоматически переключится на TCP Socket** для стабильности
+- Повторная авторизация не требуется
 
-After scanning, the token is saved automatically.
+#### Способ 2: Token авторизация
+
+Если у вас уже есть токен (от другого сервиса/приложения):
+
+```javascript
+const client = new WebMaxClient({
+  name: 'my_session',
+  token: 'An_Sx6HQ9HDiftNkVBNf6Q5PG5D8Oyj...',  // Ваш токен
+  configPath: 'config/myconfig.json',  // Или из файла
+  saveToken: true
+});
+
+await client.start();
+```
+
+Формат конфига (`config/default.json`):
+```json
+{
+  "token": "An_Sx6HQ9HDiftNk...",
+  "ua": "Mozilla/5.0 (iPhone...)",
+  "device_type": 2,
+  "deviceType": "IOS"
+}
+```
+
+#### Транспорты
+
+- **WEB** (`deviceType: 'WEB'` или `device_type: 1`) → WebSocket (ws-api.oneme.ru)
+- **IOS** (`deviceType: 'IOS'` или `device_type: 2`) → TCP Socket (api.oneme.ru)
+- **ANDROID** (`deviceType: 'ANDROID'` или `device_type: 3`) → TCP Socket (api.oneme.ru)
+
+Клиент **автоматически выбирает** правильный транспорт на основе сохраненного deviceType.
 
 ## API
 
@@ -97,7 +140,11 @@ After scanning, the token is saved automatically.
 ```javascript
 const client = new WebMaxClient({
   name: 'session',        // Имя сессии (для сохранения авторизации)
-  phone: '+1234567890',   // Номер телефона
+  token: 'An_Sx6H...',    // Токен авторизации (опционально)
+  configPath: 'myconfig', // Путь к config файлу (опционально)
+  deviceType: 'WEB',      // Тип устройства: 'WEB', 'IOS', 'ANDROID' (опционально)
+  saveToken: true,        // Сохранять токен в сессию (по умолчанию true)
+  debug: false,           // Отладочный режим (опционально)
   apiUrl: 'wss://...',    // URL WebSocket API (опционально)
   maxReconnectAttempts: 5,// Максимальное количество попыток переподключения
   reconnectDelay: 3000    // Задержка между попытками переподключения (мс)
@@ -116,12 +163,26 @@ await client.start();
 
 ##### `sendMessage(options)`
 
-Отправляет сообщение в чат.
+Отправляет сообщение в чат с уведомлением (notify: true).
 
 ```javascript
 const message = await client.sendMessage({
   chatId: 123,
   text: 'Привет!',
+  cid: Date.now(),
+  replyTo: null,        // ID сообщения для ответа (опционально)
+  attachments: []       // Вложения (опционально)
+});
+```
+
+##### `sendMessageChannel(options)`
+
+Отправляет сообщение в канал без уведомления (notify: false).
+
+```javascript
+const message = await client.sendMessageChannel({
+  chatId: 123,
+  text: 'Сообщение в канал',
   cid: Date.now(),
   replyTo: null,        // ID сообщения для ответа (опционально)
   attachments: []       // Вложения (опционально)
@@ -362,22 +423,83 @@ ChatActions.RECORDING_VOICE // Записывает голосовое
 ChatActions.RECORDING_VIDEO // Записывает видео
 ```
 
+### MaxSocketTransport
+
+Низкоуровневый TCP Socket транспорт для IOS/ANDROID (api.oneme.ru).
+
+#### Прямое использование (advanced)
+
+```javascript
+const { MaxSocketTransport } = require('webmaxsocket');
+
+const transport = new MaxSocketTransport({
+  deviceType: 'IOS',
+  ua: 'Mozilla/5.0 (iPhone...)',
+  deviceId: 'your-device-id',
+  debug: true
+});
+
+await transport.connect();
+await transport.handshake(userAgentPayload);
+const syncData = await transport.sync(token, userAgent);
+```
+
+**Примечание:** В большинстве случаев используйте `WebMaxClient`, который автоматически выбирает нужный транспорт.
+
+## 📚 Примеры
+
+### Пример 1: QR-авторизация (example.js)
+
+```bash
+node example.js
+```
+
+Первый запуск - QR-авторизация, повторные запуски - автоматический вход через TCP Socket.
+
+### Пример 2: Token авторизация (example-token.js)
+
+```bash
+# Через config файл
+node example-token.js
+node example-token.js myconfig  # config/myconfig.json
+
+# Через переменную окружения
+TOKEN="ваш_токен" node example-token.js
+```
+
+### Пример 3: IOS/ANDROID Socket (example-ios.js)
+
+```bash
+# С готовым конфигом
+node example-ios.js
+
+# С отладкой
+node example-ios.js --debug
+```
+
 ## Структура проекта
 
 ```
 webmaxsocket/
 ├── lib/
 │   ├── client.js           # Основной клиент
+│   ├── socketTransport.js  # TCP Socket транспорт
 │   ├── session.js          # Управление сессиями
+│   ├── userAgent.js        # UserAgent генератор
+│   ├── opcodes.js          # Протокол опкоды
 │   ├── constants.js        # Константы
 │   └── entities/
 │       ├── User.js         # Класс пользователя
 │       ├── Message.js      # Класс сообщения
 │       ├── ChatAction.js   # Класс действия в чате
 │       └── index.js        # Экспорт сущностей
+├── config/                 # Конфигурационные файлы
+│   └── example.json        # Пример конфига
 ├── sessions/               # Директория с сохраненными сессиями
 ├── index.js                # Точка входа
-├── example.js              # Пример использования
+├── example.js              # QR-авторизация
+├── example-token.js        # Token авторизация
+├── example-ios.js          # IOS/ANDROID Socket
 ├── package.json
 └── README.md
 ```
@@ -409,3 +531,51 @@ try {
   console.error('Ошибка:', error.message);
 }
 ```
+
+## 🔧 Отладка / Debug
+
+Для включения отладочного вывода:
+
+```javascript
+const client = new WebMaxClient({
+  name: 'my_session',
+  debug: true  // или process.env.DEBUG = '1'
+});
+```
+
+Или через переменную окружения:
+
+```bash
+DEBUG=1 node example.js
+```
+
+## 💡 Важные замечания
+
+1. **TCP Socket после QR-авторизации:** После первой успешной QR-авторизации клиент автоматически сохраняет `clientSessionId` и переключается на TCP Socket транспорт при следующем запуске для повышения стабильности.
+
+2. **Разница между sendMessage и sendMessageChannel:**
+   - `sendMessage()` - отправка с уведомлением (notify: true) для обычных чатов
+   - `sendMessageChannel()` - отправка без уведомления (notify: false) для каналов
+
+3. **Автоматический выбор транспорта:** Клиент автоматически определяет какой транспорт использовать на основе `deviceType` в сессии или config файле.
+
+## 🔗 Ссылки / Links
+
+- [GitHub Repository](https://github.com/Tellarion/webmaxsocket)
+- [NPM Package](https://www.npmjs.com/package/webmaxsocket)
+
+## 📄 Лицензия / License
+
+MIT License - see LICENSE file for details
+
+## 👤 Автор / Author
+
+Tellarion - [tellarion.dev](https://tellarion.dev)
+
+## 💝 Поддержка / Support
+
+Если вам нравится эта библиотека и вы хотите поддержать разработку:
+
+**USDT (TRC20):** `TXfs1iVbp2aLd3rbc4cenVzMoTevP5RbBE`
+
+Спасибо за вашу поддержку!
