@@ -1,80 +1,44 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
-const User_js_1 = __importDefault(require("./User.js"));
-const isRecord = (value) => typeof value === 'object' && value !== null;
-const asId = (value) => {
-    if (typeof value === 'string' || typeof value === 'number') {
-        return value;
-    }
-    return null;
-};
-const getErrorMessage = (error) => {
-    if (error instanceof Error) {
-        return error.message;
-    }
-    return String(error);
-};
-const isFileAttach = (attachment) => attachment._type === 'FILE' && (typeof attachment.fileId === 'string' || typeof attachment.fileId === 'number');
-const getFileIdFromAttach = (attachment) => {
-    const fileId = attachment.fileId ?? attachment.file_id ?? attachment.id;
-    if (typeof fileId === 'string' || typeof fileId === 'number') {
-        return fileId;
-    }
-    return null;
-};
+exports.Message = void 0;
+const User_1 = require("./User");
 /**
  * Класс представляющий сообщение
  */
 class Message {
     constructor(data, client) {
         this.client = client;
-        this.id = asId(data.id) || asId(data.messageId) || null;
-        this.cid = asId(data.cid) || null;
-        this.chatId = asId(data.chatId) || asId(data.chat_id) || null;
-        // Обработка text: может быть строкой или объектом
+        this.id = data.id || data.messageId || null;
+        this.cid = data.cid || null;
+        this.chatId = data.chatId || data.chat_id || null;
         if (typeof data.text === 'string') {
             this.text = data.text;
         }
-        else if (isRecord(data.text)) {
-            const innerText = data.text.text;
-            this.text = typeof innerText === 'string' ? innerText : JSON.stringify(data.text);
-        }
-        else if (typeof data.message === 'string') {
-            this.text = data.message;
+        else if (typeof data.text === 'object' && data.text !== null) {
+            this.text = data.text.text || JSON.stringify(data.text);
         }
         else {
-            this.text = '';
+            this.text = data.message || '';
         }
-        // Обработка sender: может быть объектом User или просто ID
         if (data.sender) {
-            if (isRecord(data.sender)) {
-                this.senderId = asId(data.sender.id);
-                this.sender = new User_js_1.default(data.sender);
-            }
-            else if (typeof data.sender === 'string' || typeof data.sender === 'number') {
-                // Если sender - это просто ID (число)
-                this.senderId = data.sender;
-                this.sender = null; // Будет загружен позже при необходимости
+            if (typeof data.sender === 'object') {
+                this.senderId = data.sender.id || null;
+                this.sender = new User_1.User(data.sender);
             }
             else {
-                this.senderId = null;
+                this.senderId = data.sender;
                 this.sender = null;
             }
         }
         else {
-            this.senderId = asId(data.senderId) || asId(data.sender_id) || asId(data.from_id) || null;
+            this.senderId = data.senderId || data.sender_id || data.from_id || null;
             this.sender = null;
         }
-        this.timestamp = typeof data.timestamp === 'number' ? data.timestamp : typeof data.time === 'number' ? data.time : Date.now();
-        this.type = typeof data.type === 'string' ? data.type : 'text';
-        this.isEdited = Boolean(data.isEdited || data.is_edited);
-        this.replyTo = asId(data.replyTo) || asId(data.reply_to) || null;
-        const rawAttachments = Array.isArray(data.attaches) ? data.attaches : Array.isArray(data.attachments) ? data.attachments : [];
-        this.attachments = rawAttachments.filter(isRecord);
-        this.attaches = this.attachments;
+        this.timestamp = data.timestamp || data.time || Date.now();
+        this.type = data.type || 'text';
+        this.isEdited = data.isEdited || data.is_edited || false;
+        this.replyTo = data.replyTo || data.reply_to || null;
+        this.attachments = data.attaches || data.attachments || [];
         this.rawData = data;
     }
     /**
@@ -86,7 +50,7 @@ class Message {
                 this.sender = await this.client.getUser(this.senderId);
             }
             catch (error) {
-                console.error('Ошибка загрузки информации об отправителе:', getErrorMessage(error));
+                console.error('Ошибка загрузки информации об отправителе:', error);
             }
         }
         return this.sender;
@@ -104,84 +68,75 @@ class Message {
      * Ответить на сообщение
      */
     async reply(options) {
-        if (typeof options === 'string') {
-            options = { text: options };
-        }
+        const normalized = typeof options === 'string' ? { text: options } : options;
         return await this.client.sendMessage({
             chatId: this.chatId,
-            text: options.text,
-            cid: options.cid || Date.now(),
+            text: normalized.text,
+            cid: normalized.cid || Date.now(),
             replyTo: this.id,
-            ...options,
+            ...normalized
         });
     }
     /**
      * Редактировать сообщение
      */
     async edit(options) {
-        if (typeof options === 'string') {
-            options = { text: options };
-        }
+        const normalized = typeof options === 'string' ? { text: options } : options;
         return await this.client.editMessage({
             messageId: this.id,
             chatId: this.chatId,
-            text: options.text,
-            ...options,
+            text: normalized.text,
+            ...normalized
         });
     }
     /**
      * Удалить сообщение
      */
     async delete() {
+        if (!this.id || !this.chatId) {
+            throw new Error('messageId или chatId не задан');
+        }
         return await this.client.deleteMessage({
             messageId: this.id,
-            chatId: this.chatId,
+            chatId: this.chatId
         });
     }
     /**
      * Переслать сообщение
      */
     async forward(chatId) {
-        const forwarder = this.client;
-        return await forwarder.forwardMessage({
+        const forwardClient = this.client;
+        if (!forwardClient.forwardMessage) {
+            throw new Error('forwardMessage не реализован');
+        }
+        return await forwardClient.forwardMessage({
             messageId: this.id,
             fromChatId: this.chatId,
-            toChatId: chatId,
+            toChatId: chatId
         });
     }
-    /**
-     * Скачать FILE-вложение из сообщения
-     */
-    async downloadFile(index, options = {}) {
-        if (!this.chatId || !this.id) {
-            throw new Error('Невозможно скачать файл: отсутствует chatId или messageId');
+    async downloadFile(index = 0, options = {}) {
+        const attaches = Array.isArray(this.attachments) ? this.attachments : [];
+        const files = attaches.filter((item) => item && (item._type === 'FILE' || item.type === 'FILE'));
+        if (!files.length) {
+            throw new Error('Вложений типа FILE не найдено');
         }
-        let attachment = null;
-        if (typeof index === 'number') {
-            const candidate = this.attachments[index];
-            if (!candidate || !isFileAttach(candidate)) {
-                throw new Error(`Вложение с индексом ${index} не является FILE`);
-            }
-            attachment = candidate;
+        const file = files[index];
+        if (!file) {
+            throw new Error('Файл с указанным индексом не найден');
         }
-        else {
-            const found = this.attachments.find(isFileAttach);
-            if (found) {
-                attachment = found;
-            }
-        }
-        if (!attachment) {
-            throw new Error('В сообщении нет FILE-вложений');
-        }
-        const fileId = getFileIdFromAttach(attachment);
+        const fileId = file.fileId || file.id || file.file_id;
         if (!fileId) {
-            throw new Error('Не удалось определить fileId для FILE-вложения');
+            throw new Error('fileId не найден в вложении');
         }
-        return this.client.downloadFile({
+        if (!this.chatId || !this.id) {
+            throw new Error('chatId или messageId не задан');
+        }
+        return await this.client.downloadFile({
             fileId,
             chatId: this.chatId,
             messageId: this.id,
-            output: options.output,
+            output: options.output
         });
     }
     /**
@@ -205,8 +160,8 @@ class Message {
             type: this.type,
             isEdited: this.isEdited,
             replyTo: this.replyTo,
-            attachments: this.attachments,
+            attachments: this.attachments
         };
     }
 }
-exports.default = Message;
+exports.Message = Message;

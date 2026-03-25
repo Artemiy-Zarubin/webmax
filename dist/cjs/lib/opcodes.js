@@ -1,7 +1,6 @@
 "use strict";
 /**
  * Opcodes для протокола Max API
- * Портировано из PyMax
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DeviceType = exports.Opcode = void 0;
@@ -13,6 +12,8 @@ exports.Opcode = {
     LOG: 5,
     SESSION_INIT: 6,
     PROFILE: 16,
+    AUTH_REQUEST: 17,
+    AUTH: 18,
     LOGIN: 19,
     LOGOUT: 20,
     SYNC: 21,
@@ -43,6 +44,7 @@ exports.Opcode = {
     NOTIF_MESSAGE: 128,
     NOTIF_CHAT: 135,
     NOTIF_ATTACH: 136,
+    NOTIF_MSG_DELETE: 154,
     NOTIF_MSG_REACTIONS_CHANGED: 155,
     MSG_REACTION: 178,
     MSG_CANCEL_REACTION: 179,
@@ -54,9 +56,9 @@ exports.Opcode = {
     GET_QR_STATUS: 289,
     LOGIN_BY_QR: 291,
 };
-// Обратная карта для расшифровки опкодов
 const OpcodeNames = {};
-for (const [name, code] of Object.entries(exports.Opcode)) {
+const opcodeEntries = Object.entries(exports.Opcode);
+for (const [name, code] of opcodeEntries) {
     OpcodeNames[code] = name;
 }
 /**

@@ -4,6 +4,10 @@ node_modules/
 # Sessions (contains sensitive data)
 sessions/
 
+# Config files (contains tokens)
+config/
+!config/example.json
+
 # Logs
 *.log
 npm-debug.log*

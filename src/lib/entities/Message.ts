@@ -1,275 +1,246 @@
-import type WebMaxClient from '../client.js'
-import type { DownloadToFileResult } from '../client.js'
-import User from './User.js'
+import { User, UserPayload } from './User';
+import type { WebMaxClient } from '../client';
+import type { ApiValue, Id } from '../types';
 
-type UnknownRecord = Record<string, unknown>
-
-export interface MessageAttachment {
-	_type?: string
-	fileId?: string | number
-	id?: string | number
-	name?: string
-	size?: number
-	token?: string
-	baseUrl?: string
-	[key: string]: unknown
+export interface Attachment {
+  _type?: string;
+  type?: string;
+  fileId?: Id;
+  id?: Id;
+  file_id?: Id;
+  [key: string]: ApiValue;
 }
 
-export interface FileMessageAttachment extends MessageAttachment {
-	_type: 'FILE'
-	fileId: string | number
+export interface MessagePayload {
+  id?: Id | null;
+  messageId?: Id | null;
+  cid?: Id | null;
+  chatId?: Id | null;
+  chat_id?: Id | null;
+  text?: string | { text?: string } | null;
+  message?: string;
+  sender?: UserPayload | Id | null;
+  senderId?: Id | null;
+  sender_id?: Id | null;
+  from_id?: Id | null;
+  timestamp?: number;
+  time?: number;
+  type?: string;
+  isEdited?: boolean;
+  is_edited?: boolean;
+  replyTo?: Id | null;
+  reply_to?: Id | null;
+  attaches?: Attachment[];
+  attachments?: Attachment[];
 }
 
-type MessageReplyOptions = {
-	text?: string
-	cid?: number
-	[key: string]: unknown
+export interface ReplyOptions {
+  text?: string;
+  cid?: number;
 }
 
-type MessageEditOptions = {
-	text?: string
-	[key: string]: unknown
+export interface EditOptions {
+  text?: string;
 }
 
-type MessageDownloadOptions = {
-	output?: string
-}
-
-const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null
-
-const asId = (value: unknown): string | number | null => {
-	if (typeof value === 'string' || typeof value === 'number') {
-		return value
-	}
-	return null
-}
-
-const getErrorMessage = (error: unknown): string => {
-	if (error instanceof Error) {
-		return error.message
-	}
-	return String(error)
-}
-
-const isFileAttach = (attachment: MessageAttachment): attachment is FileMessageAttachment =>
-	attachment._type === 'FILE' && (typeof attachment.fileId === 'string' || typeof attachment.fileId === 'number')
-
-const getFileIdFromAttach = (attachment: MessageAttachment): string | number | null => {
-	const fileId = attachment.fileId ?? attachment.file_id ?? attachment.id
-	if (typeof fileId === 'string' || typeof fileId === 'number') {
-		return fileId
-	}
-	return null
+export interface DownloadOptions {
+  output?: string;
 }
 
 /**
  * Класс представляющий сообщение
  */
-export default class Message {
-	client: WebMaxClient
-	id: string | number | null
-	cid: string | number | null
-	chatId: string | number | null
-	text: string
-	senderId: string | number | null
-	sender: User | null
-	timestamp: number
-	type: string
-	isEdited: boolean
-	replyTo: string | number | null
-	attachments: MessageAttachment[]
-	attaches: MessageAttachment[]
-	rawData: UnknownRecord
+export class Message {
+  client: WebMaxClient;
+  id: Id | null;
+  cid: Id | null;
+  chatId: Id | null;
+  text: string;
+  senderId: Id | null;
+  sender: User | null;
+  timestamp: number;
+  type: string;
+  isEdited: boolean;
+  replyTo: Id | null;
+  attachments: Attachment[];
+  rawData: MessagePayload;
 
-	constructor(data: UnknownRecord, client: WebMaxClient) {
-		this.client = client
-		this.id = asId(data.id) || asId(data.messageId) || null
-		this.cid = asId(data.cid) || null
-		this.chatId = asId(data.chatId) || asId(data.chat_id) || null
+  constructor(data: MessagePayload, client: WebMaxClient) {
+    this.client = client;
+    this.id = data.id || data.messageId || null;
+    this.cid = data.cid || null;
+    this.chatId = data.chatId || data.chat_id || null;
 
-		// Обработка text: может быть строкой или объектом
-		if (typeof data.text === 'string') {
-			this.text = data.text
-		} else if (isRecord(data.text)) {
-			const innerText = data.text.text
-			this.text = typeof innerText === 'string' ? innerText : JSON.stringify(data.text)
-		} else if (typeof data.message === 'string') {
-			this.text = data.message
-		} else {
-			this.text = ''
-		}
+    if (typeof data.text === 'string') {
+      this.text = data.text;
+    } else if (typeof data.text === 'object' && data.text !== null) {
+      this.text = data.text.text || JSON.stringify(data.text);
+    } else {
+      this.text = data.message || '';
+    }
 
-		// Обработка sender: может быть объектом User или просто ID
-		if (data.sender) {
-			if (isRecord(data.sender)) {
-				this.senderId = asId(data.sender.id)
-				this.sender = new User(data.sender)
-			} else if (typeof data.sender === 'string' || typeof data.sender === 'number') {
-				// Если sender - это просто ID (число)
-				this.senderId = data.sender
-				this.sender = null // Будет загружен позже при необходимости
-			} else {
-				this.senderId = null
-				this.sender = null
-			}
-		} else {
-			this.senderId = asId(data.senderId) || asId(data.sender_id) || asId(data.from_id) || null
-			this.sender = null
-		}
+    if (data.sender) {
+      if (typeof data.sender === 'object') {
+        this.senderId = data.sender.id || null;
+        this.sender = new User(data.sender);
+      } else {
+        this.senderId = data.sender;
+        this.sender = null;
+      }
+    } else {
+      this.senderId = data.senderId || data.sender_id || data.from_id || null;
+      this.sender = null;
+    }
 
-		this.timestamp = typeof data.timestamp === 'number' ? data.timestamp : typeof data.time === 'number' ? data.time : Date.now()
-		this.type = typeof data.type === 'string' ? data.type : 'text'
-		this.isEdited = Boolean(data.isEdited || data.is_edited)
-		this.replyTo = asId(data.replyTo) || asId(data.reply_to) || null
-		const rawAttachments = Array.isArray(data.attaches) ? data.attaches : Array.isArray(data.attachments) ? data.attachments : []
+    this.timestamp = data.timestamp || data.time || Date.now();
+    this.type = data.type || 'text';
+    this.isEdited = data.isEdited || data.is_edited || false;
+    this.replyTo = data.replyTo || data.reply_to || null;
+    this.attachments = data.attaches || data.attachments || [];
+    this.rawData = data;
+  }
 
-		this.attachments = rawAttachments.filter(isRecord) as MessageAttachment[]
-		this.attaches = this.attachments
-		this.rawData = data
-	}
+  /**
+   * Получить информацию об отправителе
+   */
+  async fetchSender(): Promise<User | null> {
+    if (!this.sender && this.senderId) {
+      try {
+        this.sender = await this.client.getUser(this.senderId);
+      } catch (error) {
+        console.error('Ошибка загрузки информации об отправителе:', error);
+      }
+    }
+    return this.sender;
+  }
 
-	/**
-	 * Получить информацию об отправителе
-	 */
-	async fetchSender() {
-		if (!this.sender && this.senderId) {
-			try {
-				this.sender = await this.client.getUser(this.senderId)
-			} catch (error) {
-				console.error('Ошибка загрузки информации об отправителе:', getErrorMessage(error))
-			}
-		}
-		return this.sender
-	}
+  /**
+   * Получить имя отправителя
+   */
+  getSenderName(): string {
+    if (this.sender) {
+      return this.sender.fullname || this.sender.firstname || 'User';
+    }
+    return this.senderId ? `User ${this.senderId}` : 'Unknown';
+  }
 
-	/**
-	 * Получить имя отправителя
-	 */
-	getSenderName() {
-		if (this.sender) {
-			return this.sender.fullname || this.sender.firstname || 'User'
-		}
-		return this.senderId ? `User ${this.senderId}` : 'Unknown'
-	}
+  /**
+   * Ответить на сообщение
+   */
+  async reply(options: ReplyOptions | string): Promise<Message | ApiValue | null> {
+    const normalized = typeof options === 'string' ? { text: options } : options;
 
-	/**
-	 * Ответить на сообщение
-	 */
-	async reply(options: string | MessageReplyOptions) {
-		if (typeof options === 'string') {
-			options = { text: options }
-		}
+    return await this.client.sendMessage({
+      chatId: this.chatId,
+      text: normalized.text,
+      cid: normalized.cid || Date.now(),
+      replyTo: this.id,
+      ...normalized
+    });
+  }
 
-		return await this.client.sendMessage({
-			chatId: this.chatId as string | number,
-			text: options.text,
-			cid: options.cid || Date.now(),
-			replyTo: this.id,
-			...options,
-		})
-	}
+  /**
+   * Редактировать сообщение
+   */
+  async edit(options: EditOptions | string): Promise<Message | ApiValue> {
+    const normalized = typeof options === 'string' ? { text: options } : options;
 
-	/**
-	 * Редактировать сообщение
-	 */
-	async edit(options: string | MessageEditOptions) {
-		if (typeof options === 'string') {
-			options = { text: options }
-		}
+    return await this.client.editMessage({
+      messageId: this.id,
+      chatId: this.chatId,
+      text: normalized.text,
+      ...normalized
+    });
+  }
 
-		return await this.client.editMessage({
-			messageId: this.id as string | number,
-			chatId: this.chatId as string | number,
-			text: options.text,
-			...options,
-		})
-	}
+  /**
+   * Удалить сообщение
+   */
+  async delete(): Promise<boolean> {
+    if (!this.id || !this.chatId) {
+      throw new Error('messageId или chatId не задан');
+    }
+    return await this.client.deleteMessage({
+      messageId: this.id,
+      chatId: this.chatId
+    });
+  }
 
-	/**
-	 * Удалить сообщение
-	 */
-	async delete() {
-		return await this.client.deleteMessage({
-			messageId: this.id as string | number,
-			chatId: this.chatId as string | number,
-		})
-	}
+  /**
+   * Переслать сообщение
+   */
+  async forward(chatId: Id): Promise<ApiValue> {
+    const forwardClient = this.client as unknown as { forwardMessage?: (options: { messageId: Id | null; fromChatId: Id | null; toChatId: Id }) => Promise<ApiValue> };
+    if (!forwardClient.forwardMessage) {
+      throw new Error('forwardMessage не реализован');
+    }
+    return await forwardClient.forwardMessage({
+      messageId: this.id,
+      fromChatId: this.chatId,
+      toChatId: chatId
+    });
+  }
 
-	/**
-	 * Переслать сообщение
-	 */
-	async forward(chatId: string | number) {
-		const forwarder = this.client as unknown as { forwardMessage: (options: UnknownRecord) => Promise<unknown> }
-		return await forwarder.forwardMessage({
-			messageId: this.id as string | number,
-			fromChatId: this.chatId as string | number,
-			toChatId: chatId,
-		})
-	}
+  async downloadFile(index: number = 0, options: DownloadOptions = {}): Promise<Buffer | { path: string; url: string; unsafe: boolean }> {
+    const attaches = Array.isArray(this.attachments) ? this.attachments : [];
+    const files = attaches.filter((item) => item && (item._type === 'FILE' || item.type === 'FILE'));
+    if (!files.length) {
+      throw new Error('Вложений типа FILE не найдено');
+    }
+    const file = files[index];
+    if (!file) {
+      throw new Error('Файл с указанным индексом не найден');
+    }
+    const fileId = file.fileId || file.id || file.file_id;
+    if (!fileId) {
+      throw new Error('fileId не найден в вложении');
+    }
+    if (!this.chatId || !this.id) {
+      throw new Error('chatId или messageId не задан');
+    }
+    return await this.client.downloadFile({
+      fileId,
+      chatId: this.chatId,
+      messageId: this.id,
+      output: options.output
+    });
+  }
 
-	/**
-	 * Скачать FILE-вложение из сообщения
-	 */
-	async downloadFile(index?: number, options: MessageDownloadOptions = {}): Promise<Buffer | DownloadToFileResult> {
-		if (!this.chatId || !this.id) {
-			throw new Error('Невозможно скачать файл: отсутствует chatId или messageId')
-		}
+  /**
+   * Возвращает строковое представление сообщения
+   */
+  toString(): string {
+    return `Message(id=${this.id}, from=${this.senderId}, text="${this.text.substring(0, 50)}")`;
+  }
 
-		let attachment: MessageAttachment | null = null
-
-		if (typeof index === 'number') {
-			const candidate = this.attachments[index]
-			if (!candidate || !isFileAttach(candidate)) {
-				throw new Error(`Вложение с индексом ${index} не является FILE`)
-			}
-			attachment = candidate
-		} else {
-			const found = this.attachments.find(isFileAttach)
-			if (found) {
-				attachment = found
-			}
-		}
-
-		if (!attachment) {
-			throw new Error('В сообщении нет FILE-вложений')
-		}
-
-		const fileId = getFileIdFromAttach(attachment)
-		if (!fileId) {
-			throw new Error('Не удалось определить fileId для FILE-вложения')
-		}
-
-		return this.client.downloadFile({
-			fileId,
-			chatId: this.chatId,
-			messageId: this.id,
-			output: options.output,
-		})
-	}
-
-	/**
-	 * Возвращает строковое представление сообщения
-	 */
-	toString() {
-		return `Message(id=${this.id}, from=${this.senderId}, text="${this.text.substring(0, 50)}")`
-	}
-
-	/**
-	 * Возвращает JSON представление
-	 */
-	toJSON() {
-		return {
-			id: this.id,
-			cid: this.cid,
-			chatId: this.chatId,
-			text: this.text,
-			senderId: this.senderId,
-			sender: this.sender ? this.sender.toJSON() : null,
-			timestamp: this.timestamp,
-			type: this.type,
-			isEdited: this.isEdited,
-			replyTo: this.replyTo,
-			attachments: this.attachments,
-		}
-	}
+  /**
+   * Возвращает JSON представление
+   */
+  toJSON(): {
+    id: Id | null;
+    cid: Id | null;
+    chatId: Id | null;
+    text: string;
+    senderId: Id | null;
+    sender: ReturnType<User['toJSON']> | null;
+    timestamp: number;
+    type: string;
+    isEdited: boolean;
+    replyTo: Id | null;
+    attachments: Attachment[];
+  } {
+    return {
+      id: this.id,
+      cid: this.cid,
+      chatId: this.chatId,
+      text: this.text,
+      senderId: this.senderId,
+      sender: this.sender ? this.sender.toJSON() : null,
+      timestamp: this.timestamp,
+      type: this.type,
+      isEdited: this.isEdited,
+      replyTo: this.replyTo,
+      attachments: this.attachments
+    };
+  }
 }

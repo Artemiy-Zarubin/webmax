@@ -3,7 +3,7 @@ import path from 'path';
 /**
  * Менеджер сессий для хранения данных авторизации
  */
-export default class SessionManager {
+export class SessionManager {
     constructor(sessionName = 'default') {
         this.sessionName = sessionName;
         this.sessionDir = path.join(process.cwd(), 'sessions');
@@ -60,7 +60,7 @@ export default class SessionManager {
      * Получает значение из сессии
      */
     get(key, defaultValue = null) {
-        return this.data[key] !== undefined ? this.data[key] : defaultValue;
+        return (this.data[key] !== undefined ? this.data[key] : defaultValue);
     }
     /**
      * Удаляет значение из сессии
@@ -105,4 +105,3 @@ export default class SessionManager {
         return this.has('token') && this.has('userId');
     }
 }
-//# sourceMappingURL=session.js.map

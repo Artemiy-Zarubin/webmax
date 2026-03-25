@@ -1,32 +1,33 @@
-/**
- * WebMaxSocket - Node.js библиотека для работы с API мессенджера Max
- * tellarion.dev
- *
- * @module webmaxsocket
- */
-
-import WebMaxClient from './lib/client.js';
-import type { DownloadFileParams, DownloadToFileResult, GetFileLinkParams } from './lib/client.js';
-import { User, Message, ChatAction } from './lib/entities/index.js';
-import { ChatActions, EventTypes, MessageTypes } from './lib/constants.js';
-import { Opcode, getOpcodeName } from './lib/opcodes.js';
-import { UserAgentPayload } from './lib/userAgent.js';
-
-export {
-  WebMaxClient,
-  User,
-  Message,
-  ChatAction,
-  ChatActions,
-  EventTypes,
-  MessageTypes,
-  Opcode,
-  getOpcodeName,
-  UserAgentPayload,
-};
-
+export { WebMaxClient } from './lib/client';
+export { MaxSocketTransport } from './lib/socketTransport';
+export { User, Message, ChatAction } from './lib/entities';
+export { ChatActions, EventTypes, MessageTypes } from './lib/constants';
+export { Opcode, getOpcodeName } from './lib/opcodes';
+export { UserAgentPayload } from './lib/userAgent';
 export type {
-  DownloadFileParams,
-  DownloadToFileResult,
-  GetFileLinkParams,
-};
+  Attachment,
+  MessagePayload,
+  ChatActionPayload,
+  UserPayload
+} from './lib/entities';
+export type {
+  ApiValue,
+  Id
+} from './lib/types';
+export type {
+  WebMaxClientOptions,
+  SendMessageOptions,
+  EditMessageOptions,
+  DeleteMessageOptions,
+  FileLinkRequest,
+  FileLinkResult,
+  DownloadFileRequest,
+  DownloadFileSaved,
+  DownloadFileResult,
+  StartHandler,
+  MessageHandler,
+  MessageRemovedHandler,
+  ChatActionHandler,
+  ErrorHandler,
+  DisconnectHandler
+} from './lib/client';

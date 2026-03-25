@@ -1,60 +1,63 @@
-import type WebMaxClient from '../client.js';
-import User from './User.js';
-
-type UnknownRecord = Record<string, unknown>;
-
-const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null;
-
-const asId = (value: unknown): string | number | null => {
-  if (typeof value === 'string' || typeof value === 'number') {
-    return value;
-  }
-  return null;
-};
+import { User, UserPayload } from './User';
+import type { WebMaxClient } from '../client';
+import type { Id } from '../types';
 
 /**
  * Класс представляющий действие в чате
  */
-export default class ChatAction {
-  client: WebMaxClient;
+export interface ChatActionPayload {
+  type?: string;
+  action?: string;
+  chatId?: Id | null;
+  chat_id?: Id | null;
+  userId?: Id | null;
+  user_id?: Id | null;
+  user?: UserPayload;
+  timestamp?: number;
+}
+
+export class ChatAction {
+  client: WebMaxClient | null;
   type: string | null;
-  chatId: string | number | null;
-  userId: string | number | null;
+  chatId: Id | null;
+  userId: Id | null;
   user: User | null;
   timestamp: number;
-  rawData: UnknownRecord;
+  rawData: ChatActionPayload;
 
-  constructor(data: UnknownRecord, client: WebMaxClient) {
+  constructor(data: ChatActionPayload, client: WebMaxClient | null) {
     this.client = client;
-    this.type = typeof data.type === 'string'
-      ? data.type
-      : typeof data.action === 'string'
-        ? data.action
-        : null;
-    this.chatId = asId(data.chatId ?? data.chat_id);
-    this.userId = asId(data.userId ?? data.user_id);
-    this.user = isRecord(data.user) ? new User(data.user) : null;
-    this.timestamp = typeof data.timestamp === 'number' ? data.timestamp : Date.now();
+    this.type = data.type || data.action || null;
+    this.chatId = data.chatId || data.chat_id || null;
+    this.userId = data.userId || data.user_id || null;
+    this.user = data.user ? new User(data.user) : null;
+    this.timestamp = data.timestamp || Date.now();
     this.rawData = data;
   }
 
   /**
    * Возвращает строковое представление действия
    */
-  toString() {
+  toString(): string {
     return `ChatAction(type=${this.type}, user=${this.userId}, chat=${this.chatId})`;
   }
 
   /**
    * Возвращает JSON представление
    */
-  toJSON() {
+  toJSON(): {
+    type: string | null;
+    chatId: Id | null;
+    userId: Id | null;
+    user: ReturnType<User['toJSON']> | null;
+    timestamp: number;
+  } {
     return {
       type: this.type,
       chatId: this.chatId,
       userId: this.userId,
       user: this.user ? this.user.toJSON() : null,
-      timestamp: this.timestamp,
+      timestamp: this.timestamp
     };
   }
 }

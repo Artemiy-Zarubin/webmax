@@ -7,8 +7,10 @@ export const ChatActions = {
   STICKER: 'sticker',
   FILE: 'file',
   RECORDING_VOICE: 'recording_voice',
-  RECORDING_VIDEO: 'recording_video',
+  RECORDING_VIDEO: 'recording_video'
 } as const;
+
+export type ChatActionType = typeof ChatActions[keyof typeof ChatActions];
 
 export const EventTypes = {
   START: 'start',
@@ -16,8 +18,10 @@ export const EventTypes = {
   MESSAGE_REMOVED: 'message_removed',
   CHAT_ACTION: 'chat_action',
   ERROR: 'error',
-  DISCONNECT: 'disconnect',
+  DISCONNECT: 'disconnect'
 } as const;
+
+export type EventType = typeof EventTypes[keyof typeof EventTypes];
 
 export const MessageTypes = {
   TEXT: 'text',
@@ -25,5 +29,7 @@ export const MessageTypes = {
   VIDEO: 'video',
   AUDIO: 'audio',
   DOCUMENT: 'document',
-  STICKER: 'sticker',
+  STICKER: 'sticker'
 } as const;
+
+export type MessageType = typeof MessageTypes[keyof typeof MessageTypes];

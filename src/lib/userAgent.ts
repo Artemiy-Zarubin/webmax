@@ -2,6 +2,8 @@
  * Генерация UserAgent для Max API
  */
 
+import type { ApiValue } from './types';
+
 const DEVICE_NAMES = [
   'Chrome', 'Firefox', 'Edge', 'Safari', 'Opera', 'Vivaldi', 'Brave', 'Chromium',
   'Windows 10', 'Windows 11', 'macOS Big Sur', 'macOS Monterey', 'macOS Ventura',
@@ -32,15 +34,16 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.2; rv:121.0) Gecko/20100101 Firefox/121.0',
 ];
 
-function randomChoice<T>(array: T[]) {
+function randomChoice<T>(array: T[]): T {
   return array[Math.floor(Math.random() * array.length)];
 }
 
-function randomInt(min: number, max: number) {
+function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-export interface UserAgentOptions {
+export interface UserAgentPayloadOptions {
+  deviceType?: string;
   locale?: string;
   deviceLocale?: string;
   osVersion?: string;
@@ -49,15 +52,13 @@ export interface UserAgentOptions {
   appVersion?: string;
   screen?: string;
   timezone?: string;
-  clientSessionId?: number;
-  buildNumber?: number;
+  clientSessionId?: number | null;
+  buildNumber?: number | null;
+  release?: string;
 }
 
-/**
- * Создает UserAgent пейлоад для Max API
- */
-export class UserAgentPayload {
-  deviceType: 'WEB';
+export interface UserAgentPayloadJson extends Record<string, ApiValue> {
+  deviceType: string;
   locale: string;
   deviceLocale: string;
   osVersion: string;
@@ -68,26 +69,47 @@ export class UserAgentPayload {
   timezone: string;
   clientSessionId: number;
   buildNumber: number;
+  release?: string;
+}
 
-  constructor(options: UserAgentOptions = {}) {
-    this.deviceType = 'WEB'; // Всегда WEB (только QR авторизация)
+/**
+ * Создает UserAgent пейлоад для Max API
+ * Поддерживает WEB, IOS и кастомные профили (для token auth)
+ */
+export class UserAgentPayload {
+  deviceType: string;
+  locale: string;
+  deviceLocale: string;
+  osVersion: string;
+  deviceName: string;
+  headerUserAgent: string;
+  appVersion: string;
+  screen: string;
+  timezone: string;
+  clientSessionId: number;
+  buildNumber: number;
+  release?: string;
+
+  constructor(options: UserAgentPayloadOptions = {}) {
+    this.deviceType = options.deviceType || 'WEB';
     this.locale = options.locale || 'ru';
     this.deviceLocale = options.deviceLocale || 'ru';
     this.osVersion = options.osVersion || randomChoice(OS_VERSIONS);
     this.deviceName = options.deviceName || randomChoice(DEVICE_NAMES);
     this.headerUserAgent = options.headerUserAgent || randomChoice(USER_AGENTS);
-    this.appVersion = options.appVersion || '26.3.9';
+    this.appVersion = options.appVersion || '25.12.14';
     this.screen = options.screen || randomChoice(SCREEN_SIZES);
     this.timezone = options.timezone || randomChoice(TIMEZONES);
-    this.clientSessionId = options.clientSessionId || randomInt(1, 15);
-    this.buildNumber = options.buildNumber || 0x97CB; // 38859
+    this.clientSessionId = options.clientSessionId ?? randomInt(1, 15);
+    this.buildNumber = options.buildNumber ?? 0x97CB;
+    this.release = options.release;
   }
 
   /**
    * Преобразует в объект для отправки (camelCase ключи)
    */
-  toJSON() {
-    return {
+  toJSON(): UserAgentPayloadJson {
+    const obj: UserAgentPayloadJson = {
       deviceType: this.deviceType,
       locale: this.locale,
       deviceLocale: this.deviceLocale,
@@ -100,5 +122,7 @@ export class UserAgentPayload {
       clientSessionId: this.clientSessionId,
       buildNumber: this.buildNumber,
     };
+    if (this.release !== undefined) obj.release = this.release;
+    return obj;
   }
 }

@@ -1,6 +1,5 @@
 /**
  * Opcodes для протокола Max API
- * Портировано из PyMax
  */
 
 export const Opcode = {
@@ -10,6 +9,8 @@ export const Opcode = {
   LOG: 5,
   SESSION_INIT: 6,
   PROFILE: 16,
+  AUTH_REQUEST: 17,
+  AUTH: 18,
   LOGIN: 19,
   LOGOUT: 20,
   SYNC: 21,
@@ -40,6 +41,7 @@ export const Opcode = {
   NOTIF_MESSAGE: 128,
   NOTIF_CHAT: 135,
   NOTIF_ATTACH: 136,
+  NOTIF_MSG_DELETE: 154,
   NOTIF_MSG_REACTIONS_CHANGED: 155,
   MSG_REACTION: 178,
   MSG_CANCEL_REACTION: 179,
@@ -52,16 +54,18 @@ export const Opcode = {
   LOGIN_BY_QR: 291,
 } as const;
 
-// Обратная карта для расшифровки опкодов
+export type OpcodeType = typeof Opcode[keyof typeof Opcode];
+
 const OpcodeNames: Record<number, string> = {};
-for (const [name, code] of Object.entries(Opcode)) {
-  OpcodeNames[code as unknown as number] = name;
+const opcodeEntries = Object.entries(Opcode) as Array<[string, number]>;
+for (const [name, code] of opcodeEntries) {
+  OpcodeNames[code] = name;
 }
 
 /**
  * Получить название опкода
  */
-export function getOpcodeName(code: number) {
+export function getOpcodeName(code: number): string {
   return OpcodeNames[code] || `UNKNOWN_${code}`;
 }
 

@@ -1,49 +1,37 @@
+import fs from 'fs';
+import path from 'path';
+import http from 'http';
+import https from 'https';
 import WebSocket from 'ws';
-import { EventEmitter } from 'events';
+import EventEmitter from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import qrcode from 'qrcode-terminal';
-import { createWriteStream } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import { Readable } from 'node:stream';
-import type { ReadableStream as WebReadableStream } from 'node:stream/web';
-import { pipeline } from 'node:stream/promises';
-import SessionManager from './session.js';
-import { Message, ChatAction, User } from './entities/index.js';
-import { EventTypes } from './constants.js';
-import { Opcode } from './opcodes.js';
-import { UserAgentPayload } from './userAgent.js';
+import { SessionManager } from './session';
+import { MaxSocketTransport } from './socketTransport';
+import { Message, ChatAction, User } from './entities';
+import { EventTypes } from './constants';
+import { Opcode, getOpcodeName } from './opcodes';
+import { UserAgentPayload, UserAgentPayloadJson, UserAgentPayloadOptions } from './userAgent';
+import type { ApiValue, Id } from './types';
+import type { Attachment, MessagePayload, ChatActionPayload, UserPayload } from './entities';
 
-type UnknownRecord = Record<string, unknown>;
-
-type StartHandler = () => void | Promise<void>;
-type MessageHandler = (message: Message) => void | Promise<void>;
-type MessageRemovedHandler = (message: Message) => void | Promise<void>;
-type ChatActionHandler = (action: ChatAction) => void | Promise<void>;
-type ErrorHandler = (error: unknown) => void | Promise<void>;
-type DisconnectHandler = () => void | Promise<void>;
-
-type PendingRequest = {
-  resolve: (value: ServerMessage) => void;
-  reject: (reason?: unknown) => void;
-  timeoutId?: NodeJS.Timeout;
-};
-
-interface ServerMessage {
-  ver?: number;
-  cmd?: number;
-  seq?: number;
-  opcode: number;
-  payload?: UnknownRecord | null;
-  [key: string]: unknown;
-}
-
-interface ClientMessage {
-  ver: number;
-  cmd: number;
-  seq: number;
-  opcode: number;
-  payload: UnknownRecord;
+export interface SessionConfig {
+  token?: string;
+  agent?: string;
+  ua?: string;
+  headerUserAgent?: string;
+  device_type?: string | number;
+  deviceType?: string | number;
+  locale?: string;
+  deviceLocale?: string;
+  osVersion?: string;
+  deviceName?: string;
+  appVersion?: string;
+  screen?: string;
+  timezone?: string;
+  buildNumber?: number;
+  clientSessionId?: number;
+  release?: string;
 }
 
 export interface WebMaxClientOptions {
@@ -51,74 +39,183 @@ export interface WebMaxClientOptions {
   name?: string;
   session?: string;
   apiUrl?: string;
-  userAgent?: UserAgentPayload;
-  appVersion?: string;
+  token?: string;
+  ua?: string;
+  agent?: string;
+  headerUserAgent?: string;
+  userAgent?: UserAgentPayload | UserAgentPayloadOptions;
+  configPath?: string;
+  config?: string;
+  saveToken?: boolean;
+  deviceType?: string | number;
   deviceId?: string;
   maxReconnectAttempts?: number;
   reconnectDelay?: number;
-  [key: string]: unknown;
+  debug?: boolean;
 }
 
 export interface SendMessageOptions {
-  chatId: string | number;
+  chatId: Id | null;
   text?: string;
   cid?: number;
-  replyTo?: string | number | null;
-  attachments?: unknown[];
-  [key: string]: unknown;
+  replyTo?: Id | null;
+  attachments?: Attachment[];
 }
 
 export interface EditMessageOptions {
-  messageId: string | number;
-  chatId: string | number;
+  messageId: Id | null;
+  chatId: Id | null;
   text?: string;
-  [key: string]: unknown;
 }
 
 export interface DeleteMessageOptions {
-  messageId: string | number | Array<string | number>;
-  chatId: string | number;
+  messageId: Id | Id[];
+  chatId: Id | null;
   forMe?: boolean;
 }
 
-export interface GetFileLinkParams {
-  fileId: string | number;
-  chatId: string | number;
-  messageId: string | number;
+export interface FileLinkRequest {
+  fileId: Id;
+  chatId: Id;
+  messageId: Id;
 }
 
-export interface DownloadFileParams extends GetFileLinkParams {
+export interface FileLinkResult {
+  url: string;
+  unsafe: boolean;
+}
+
+export interface DownloadFileRequest extends FileLinkRequest {
   output?: string;
 }
 
-export interface DownloadToFileResult {
+export interface DownloadFileSaved {
   path: string;
   url: string;
   unsafe: boolean;
 }
 
-const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null;
+export type DownloadFileResult = Buffer | DownloadFileSaved;
 
-const NOTIF_MSG_DELETE = (Opcode as Record<string, number>)['NOTIF_MSG_DELETE'];
+export type StartHandler = () => void | Promise<void>;
+export type MessageHandler = (message: Message) => void | Promise<void>;
+export type MessageRemovedHandler = (message: Message) => void | Promise<void>;
+export type ChatActionHandler = (action: ChatAction) => void | Promise<void>;
+export type ErrorHandler = (error: Error) => void | Promise<void>;
+export type DisconnectHandler = () => void | Promise<void>;
 
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
+export interface ApiResponse {
+  ver?: number;
+  cmd?: number;
+  seq?: number;
+  opcode?: number;
+  payload?: ApiValue;
+}
+
+export interface FileLinkPayload {
+  url?: string;
+  link?: string;
+  downloadUrl?: string;
+  fileUrl?: string;
+  href?: string;
+  unsafe?: boolean;
+  isUnsafe?: boolean;
+}
+
+/**
+ * Загружает конфиг: { token, agent }
+ */
+function loadSessionConfig(configPath: string): SessionConfig {
+  let resolved: string;
+  if (path.isAbsolute(configPath)) {
+    resolved = configPath;
+  } else if (!/[\\/]/.test(configPath) && !configPath.endsWith('.json')) {
+    resolved = path.join(process.cwd(), 'config', `${configPath}.json`);
+  } else {
+    resolved = path.join(process.cwd(), configPath);
   }
-  return String(error);
-};
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`Конфиг не найден: ${resolved}`);
+  }
+  const data = fs.readFileSync(resolved, 'utf8');
+  return JSON.parse(data) as SessionConfig;
+}
+
+function normalizeFileLinkPayload(payload?: FileLinkPayload | null): FileLinkResult | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const url = payload.url || payload.link || payload.downloadUrl || payload.fileUrl || payload.href || null;
+  const unsafe = payload.unsafe || payload.isUnsafe || false;
+  if (!url) return null;
+  return { url, unsafe };
+}
+
+function fetchBufferFromUrl(url: string, timeout: number = 30000): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith('https://') ? https : http;
+    const req = client.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return resolve(fetchBufferFromUrl(res.headers.location, timeout));
+      }
+      if (res.statusCode && res.statusCode >= 400) {
+        res.resume();
+        return reject(new Error('Не удалось скачать файл. HTTP ' + res.statusCode));
+      }
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    req.on('error', reject);
+    req.setTimeout(timeout, () => {
+      req.destroy(new Error('Таймаут скачивания файла'));
+    });
+  });
+}
+
+function downloadToFile(url: string, outputPath: string, timeout: number = 30000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith('https://') ? https : http;
+    const req = client.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return resolve(downloadToFile(res.headers.location, outputPath, timeout));
+      }
+      if (res.statusCode && res.statusCode >= 400) {
+        res.resume();
+        return reject(new Error('Не удалось скачать файл. HTTP ' + res.statusCode));
+      }
+      const dir = path.dirname(outputPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const stream = fs.createWriteStream(outputPath);
+      res.pipe(stream);
+      stream.on('finish', () => resolve(outputPath));
+      stream.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeout, () => {
+      req.destroy(new Error('Таймаут скачивания файла'));
+    });
+  });
+}
 
 /**
  * Основной клиент для работы с API Max
  */
-class WebMaxClient extends EventEmitter {
+export class WebMaxClient extends EventEmitter {
   phone: string | null;
   sessionName: string;
   apiUrl: string;
+  _providedToken: string | null;
+  _saveTokenToSession: boolean;
   origin: string;
   session: SessionManager;
+  _handshakeUserAgent: UserAgentPayload;
   userAgent: UserAgentPayload;
   deviceId: string;
+  _useSocketTransport: boolean;
+  _socketTransport: MaxSocketTransport | null;
   ws: WebSocket | null;
   me: User | null;
   isConnected: boolean;
@@ -136,8 +233,9 @@ class WebMaxClient extends EventEmitter {
     [EventTypes.ERROR]: ErrorHandler[];
     [EventTypes.DISCONNECT]: DisconnectHandler[];
   };
-  messageQueue: unknown[];
-  pendingRequests: Map<number, PendingRequest>;
+  messageQueue: ApiValue[];
+  pendingRequests: Map<number, { resolve: (data: ApiResponse) => void; reject: (error: Error) => void; timeoutId?: NodeJS.Timeout }>;
+  debug: boolean;
   _token?: string;
 
   constructor(options: WebMaxClientOptions = {}) {
@@ -146,20 +244,63 @@ class WebMaxClient extends EventEmitter {
     this.phone = options.phone || null;
     this.sessionName = options.name || options.session || 'default';
     this.apiUrl = options.apiUrl || 'wss://ws-api.oneme.ru/websocket';
+
+    let token = options.token || null;
+    let agent = options.ua || options.agent || options.headerUserAgent || null;
+    let configObj: SessionConfig = {};
+    const configPath = options.configPath || options.config;
+    if (configPath) {
+      configObj = loadSessionConfig(configPath);
+      token = token || configObj.token || null;
+      agent = agent || configObj.agent || configObj.ua || configObj.headerUserAgent || null;
+    }
+
+    this._providedToken = token;
+    this._saveTokenToSession = options.saveToken !== false;
     this.origin = 'https://web.max.ru';
     this.session = new SessionManager(this.sessionName);
 
-    // UserAgent
-    this.userAgent = options.userAgent || new UserAgentPayload({
-      appVersion: options.appVersion || '26.3.9'
-    });
+    const userAgentFromOptions = options.userAgent;
+    const resolvedUserAgentOptions = userAgentFromOptions
+      ? (userAgentFromOptions instanceof UserAgentPayload ? userAgentFromOptions.toJSON() : userAgentFromOptions)
+      : null;
 
-    // Device ID
-    const storedDeviceId = this.session.get<string>('deviceId');
-    this.deviceId = options.deviceId || storedDeviceId || uuidv4();
-    if (!storedDeviceId) {
+    const deviceTypeMap: Record<string | number, string> = { 1: 'WEB', 2: 'IOS', 3: 'ANDROID' };
+    const rawDeviceType = options.deviceType
+      ?? resolvedUserAgentOptions?.deviceType
+      ?? configObj.device_type
+      ?? configObj.deviceType
+      ?? 'WEB';
+    const deviceType = deviceTypeMap[rawDeviceType as string | number] || rawDeviceType || 'WEB';
+    const uaString = agent
+      || resolvedUserAgentOptions?.headerUserAgent
+      || configObj.headerUserAgent
+      || configObj.ua
+      || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+    const webDefaults: UserAgentPayloadOptions = {
+      deviceType: String(deviceType),
+      locale: resolvedUserAgentOptions?.locale || configObj.locale || 'ru',
+      deviceLocale: resolvedUserAgentOptions?.deviceLocale || configObj.deviceLocale || configObj.locale || 'ru',
+      osVersion: resolvedUserAgentOptions?.osVersion || configObj.osVersion || (deviceType === 'IOS' ? '18.6.2' : deviceType === 'ANDROID' ? '14' : 'Linux'),
+      deviceName: resolvedUserAgentOptions?.deviceName || configObj.deviceName || (deviceType === 'IOS' ? 'Safari' : deviceType === 'ANDROID' ? 'Chrome' : 'Chrome'),
+      headerUserAgent: uaString,
+      appVersion: resolvedUserAgentOptions?.appVersion || configObj.appVersion || '26.3.9',
+      screen: resolvedUserAgentOptions?.screen || configObj.screen || (deviceType === 'IOS' ? '390x844 3.0x' : deviceType === 'ANDROID' ? '360x780 3.0x' : '1080x1920 1.0x'),
+      timezone: resolvedUserAgentOptions?.timezone || configObj.timezone || 'Europe/Moscow',
+      buildNumber: resolvedUserAgentOptions?.buildNumber ?? configObj.buildNumber,
+      clientSessionId: resolvedUserAgentOptions?.clientSessionId || configObj.clientSessionId || this.session.get('clientSessionId') || undefined,
+      release: resolvedUserAgentOptions?.release || configObj.release
+    };
+    this._handshakeUserAgent = new UserAgentPayload(webDefaults);
+    this.userAgent = this._handshakeUserAgent;
+
+    this.deviceId = options.deviceId || this.session.get('deviceId') || uuidv4();
+    if (!this.session.get('deviceId')) {
       this.session.set('deviceId', this.deviceId);
     }
+
+    this._useSocketTransport = (deviceType === 'IOS' || deviceType === 'ANDROID');
+    this._socketTransport = null;
 
     this.ws = null;
     this.me = null;
@@ -169,7 +310,6 @@ class WebMaxClient extends EventEmitter {
     this.maxReconnectAttempts = options.maxReconnectAttempts || 5;
     this.reconnectDelay = options.reconnectDelay || 3000;
 
-    // Protocol fields
     this.seq = 0;
     this.ver = 11;
 
@@ -184,17 +324,17 @@ class WebMaxClient extends EventEmitter {
 
     this.messageQueue = [];
     this.pendingRequests = new Map();
+    this.debug = options.debug || process.env.DEBUG === '1';
   }
 
   /**
    * Регистрация обработчика события start
    */
-  onStart(handler?: StartHandler) {
+  onStart(handler?: StartHandler): StartHandler | ((fn: StartHandler) => StartHandler) {
     if (typeof handler === 'function') {
       this.handlers[EventTypes.START].push(handler);
       return handler;
     }
-    // Поддержка декоратора
     return (fn: StartHandler) => {
       this.handlers[EventTypes.START].push(fn);
       return fn;
@@ -204,7 +344,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Регистрация обработчика сообщений
    */
-  onMessage(handler?: MessageHandler) {
+  onMessage(handler?: MessageHandler): MessageHandler | ((fn: MessageHandler) => MessageHandler) {
     if (typeof handler === 'function') {
       this.handlers[EventTypes.MESSAGE].push(handler);
       return handler;
@@ -218,7 +358,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Регистрация обработчика удаленных сообщений
    */
-  onMessageRemoved(handler?: MessageRemovedHandler) {
+  onMessageRemoved(handler?: MessageRemovedHandler): MessageRemovedHandler | ((fn: MessageRemovedHandler) => MessageRemovedHandler) {
     if (typeof handler === 'function') {
       this.handlers[EventTypes.MESSAGE_REMOVED].push(handler);
       return handler;
@@ -232,7 +372,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Регистрация обработчика действий в чате
    */
-  onChatAction(handler?: ChatActionHandler) {
+  onChatAction(handler?: ChatActionHandler): ChatActionHandler | ((fn: ChatActionHandler) => ChatActionHandler) {
     if (typeof handler === 'function') {
       this.handlers[EventTypes.CHAT_ACTION].push(handler);
       return handler;
@@ -246,7 +386,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Регистрация обработчика ошибок
    */
-  onError(handler?: ErrorHandler) {
+  onError(handler?: ErrorHandler): ErrorHandler | ((fn: ErrorHandler) => ErrorHandler) {
     if (typeof handler === 'function') {
       this.handlers[EventTypes.ERROR].push(handler);
       return handler;
@@ -260,26 +400,37 @@ class WebMaxClient extends EventEmitter {
   /**
    * Запуск клиента
    */
-  async start() {
+  async start(): Promise<void> {
     try {
       console.log('🚀 Запуск WebMax клиента...');
 
-      // Подключаемся к WebSocket
       await this.connect();
 
-      // Проверяем наличие сохраненного токена
-      const savedToken = this.session.get<string>('token');
+      const tokenToUse = this._providedToken || this.session.get('token');
 
-      if (savedToken) {
-        console.log('✅ Найдена сохраненная сессия');
-        this._token = savedToken;
+      if (tokenToUse) {
+        if (this._providedToken) {
+          console.log('✅ Вход по токену (token auth)');
+          if (this._saveTokenToSession) {
+            this.session.set('token', this._providedToken);
+            this.session.set('deviceId', this.deviceId);
+          }
+        } else {
+          console.log('✅ Найдена сохраненная сессия');
+        }
+        this._token = tokenToUse;
 
         try {
           await this.sync();
           this.isAuthorized = true;
         } catch (error) {
-          console.log('⚠️ Сессия истекла, требуется повторная авторизация');
+          const wasTokenAuth = !!this._providedToken;
           this.session.clear();
+          this._providedToken = null;
+          if (wasTokenAuth) {
+            throw new Error(`Токен недействителен или сессия истекла. Обновите токен в config. (${(error as Error).message})`);
+          }
+          console.log('⚠️ Сессия истекла, требуется повторная авторизация');
           await this.authorize();
         }
       } else {
@@ -287,14 +438,13 @@ class WebMaxClient extends EventEmitter {
         await this.authorize();
       }
 
-      // Запускаем обработчики start
       await this.triggerHandlers(EventTypes.START);
 
       console.log('\n✅ Клиент запущен успешно!');
 
     } catch (error) {
       console.error('❌ Ошибка при запуске клиента:', error);
-      await this.triggerHandlers(EventTypes.ERROR, error);
+      await this.triggerHandlers(EventTypes.ERROR, error as Error);
       throw error;
     }
   }
@@ -302,73 +452,70 @@ class WebMaxClient extends EventEmitter {
   /**
    * Запрос QR-кода для авторизации (только для device_type="WEB")
    */
-  async requestQR() {
+  async requestQR(): Promise<ApiValue> {
     console.log('Запрос QR-кода для авторизации...');
 
     const response = await this.sendAndWait(Opcode.GET_QR, {});
 
-    if (isRecord(response.payload) && response.payload.error) {
-      throw new Error(`QR request error: ${JSON.stringify(response.payload.error)}`);
+    if (response.payload && (response.payload as { error?: ApiValue }).error) {
+      throw new Error(`QR request error: ${JSON.stringify((response.payload as { error?: ApiValue }).error)}`);
     }
 
-    return response.payload;
+    return response.payload as ApiValue;
   }
 
   /**
    * Проверка статуса QR-кода
    */
-  async checkQRStatus(trackId: string) {
+  async checkQRStatus(trackId: string): Promise<ApiValue> {
     const response = await this.sendAndWait(Opcode.GET_QR_STATUS, { trackId });
 
-    if (isRecord(response.payload) && response.payload.error) {
-      throw new Error(`QR status error: ${JSON.stringify(response.payload.error)}`);
+    if (response.payload && (response.payload as { error?: ApiValue }).error) {
+      throw new Error(`QR status error: ${JSON.stringify((response.payload as { error?: ApiValue }).error)}`);
     }
 
-    return response.payload;
+    return response.payload as ApiValue;
   }
 
   /**
    * Завершение авторизации по QR-коду
    */
-  async loginByQR(trackId: string) {
+  async loginByQR(trackId: string): Promise<ApiValue> {
     const response = await this.sendAndWait(Opcode.LOGIN_BY_QR, { trackId });
 
-    if (isRecord(response.payload) && response.payload.error) {
-      throw new Error(`QR login error: ${JSON.stringify(response.payload.error)}`);
+    if (response.payload && (response.payload as { error?: ApiValue }).error) {
+      throw new Error(`QR login error: ${JSON.stringify((response.payload as { error?: ApiValue }).error)}`);
     }
 
-    return response.payload;
+    return response.payload as ApiValue;
   }
 
   /**
    * Опрос статуса QR-кода
    */
-  async pollQRStatus(trackId: string, pollingInterval: number, expiresAt: number) {
+  async pollQRStatus(trackId: string, pollingInterval: number, expiresAt: number): Promise<boolean> {
     console.log('Ожидание сканирования QR-кода...');
 
     while (true) {
-      // Проверяем не истек ли QR-код
       const now = Date.now();
       if (now >= expiresAt) {
         throw new Error('QR-код истек. Перезапустите бот для получения нового.');
       }
 
-      // Ждем указанный интервал
-      await new Promise<void>((resolve) => setTimeout(resolve, pollingInterval));
+      await new Promise(resolve => setTimeout(resolve, pollingInterval));
 
       try {
-        const statusResponse = await this.checkQRStatus(trackId);
+        const statusResponse = await this.checkQRStatus(trackId) as { status?: { loginAvailable?: boolean } };
 
-        if (isRecord(statusResponse) && isRecord(statusResponse.status) && statusResponse.status.loginAvailable) {
+        if (statusResponse.status && statusResponse.status.loginAvailable) {
           console.log('✅ QR-код отсканирован!');
           return true;
         }
 
-        // Продолжаем опрос
         process.stdout.write('.');
 
       } catch (error) {
-        console.error('\nОшибка при проверке статуса QR:', getErrorMessage(error));
+        console.error('\nОшибка при проверке статуса QR:', (error as Error).message);
         throw error;
       }
     }
@@ -377,13 +524,13 @@ class WebMaxClient extends EventEmitter {
   /**
    * Авторизация через QR-код
    */
-  async authorizeByQR() {
+  async authorizeByQR(): Promise<void> {
     try {
       console.log('Запрос QR-кода для авторизации...');
 
-      const qrData = await this.requestQR();
+      const qrData = await this.requestQR() as { qrLink?: string; trackId?: string; pollingInterval?: number; expiresAt?: number };
 
-      if (!isRecord(qrData) || !qrData.qrLink || !qrData.trackId || !qrData.pollingInterval || !qrData.expiresAt) {
+      if (!qrData.qrLink || !qrData.trackId || !qrData.pollingInterval || !qrData.expiresAt) {
         throw new Error('Неполные данные QR-кода от сервера');
       }
 
@@ -394,36 +541,44 @@ class WebMaxClient extends EventEmitter {
       console.log('➡️  Настройки → Устройства → Подключить устройство');
       console.log('📸 Отсканируйте QR-код ниже:\n');
 
-      // Отображаем QR-код в консоли
-      qrcode.generate(String(qrData.qrLink), { small: true }, (qrCode: string) => {
+      qrcode.generate(qrData.qrLink, { small: true }, (qrCode) => {
         console.log(qrCode);
       });
 
       console.log('\n💡 Или откройте ссылку: ' + qrData.qrLink);
       console.log('='.repeat(70) + '\n');
 
-      // Опрашиваем статус
-      await this.pollQRStatus(String(qrData.trackId), Number(qrData.pollingInterval), Number(qrData.expiresAt));
+      await this.pollQRStatus(qrData.trackId, qrData.pollingInterval, qrData.expiresAt);
 
-      // Получаем токен
       console.log('\n\nПолучение токена авторизации...');
-      const loginData = await this.loginByQR(String(qrData.trackId));
+      const loginData = await this.loginByQR(qrData.trackId) as { tokenAttrs?: { LOGIN?: { token?: string } } };
 
-      const loginAttrs = isRecord(loginData) && isRecord(loginData.tokenAttrs) ? loginData.tokenAttrs.LOGIN : undefined;
-      const token = isRecord(loginAttrs) ? loginAttrs.token : undefined;
+      const loginAttrs = loginData.tokenAttrs && loginData.tokenAttrs.LOGIN;
+      const token = loginAttrs && loginAttrs.token;
 
-      if (typeof token !== 'string' || !token) {
+      if (!token) {
         throw new Error('Токен не получен из ответа');
       }
 
       this.session.set('token', token);
       this.session.set('deviceId', this.deviceId);
+      this.session.set('clientSessionId', this.userAgent.clientSessionId);
+      this.session.set('deviceType', 'IOS');
+      this.session.set('headerUserAgent', this.userAgent.headerUserAgent);
+      this.session.set('appVersion', this.userAgent.appVersion);
+      this.session.set('osVersion', this.userAgent.osVersion);
+      this.session.set('deviceName', this.userAgent.deviceName);
+      this.session.set('screen', this.userAgent.screen);
+      this.session.set('timezone', this.userAgent.timezone);
+      this.session.set('locale', this.userAgent.locale);
+      this.session.set('buildNumber', this.userAgent.buildNumber);
+
       this.isAuthorized = true;
       this._token = token;
 
       console.log('✅ Авторизация через QR-код успешна!');
+      console.log('💡 При следующем запуске будет использоваться TCP Socket транспорт');
 
-      // Выполняем sync
       await this.sync();
 
     } catch (error) {
@@ -435,7 +590,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Авторизация пользователя через QR-код
    */
-  async authorize() {
+  async authorize(): Promise<void> {
     console.log('🔐 Авторизация через QR-код');
     await this.authorizeByQR();
   }
@@ -443,7 +598,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Синхронизация с сервером (получение данных о пользователе, чатах и т.д.)
    */
-  async sync() {
+  async sync(): Promise<ApiValue> {
     console.log('🔄 Синхронизация с сервером...');
 
     const token = this._token || this.session.get<string>('token');
@@ -452,76 +607,74 @@ class WebMaxClient extends EventEmitter {
       throw new Error('Токен не найден, требуется авторизация');
     }
 
-    const payload = {
+    const payload: { [key: string]: ApiValue } = {
       interactive: true,
       token: token,
       chatsSync: 0,
       contactsSync: 0,
       presenceSync: 0,
       draftsSync: 0,
-      chatsCount: 40,
-      userAgent: this.userAgent.toJSON()
+      chatsCount: 40
     };
+    payload.userAgent = this.userAgent.toJSON();
 
     const response = await this.sendAndWait(Opcode.LOGIN, payload);
 
-    if (isRecord(response.payload) && response.payload.error) {
-      throw new Error(`Sync error: ${JSON.stringify(response.payload.error)}`);
+    if (response.payload && (response.payload as { error?: ApiValue }).error) {
+      const err = (response.payload as { error?: ApiValue; localizedMessage?: string }).error;
+      const msg = typeof err === 'string' ? err : ((response.payload as { localizedMessage?: string }).localizedMessage || JSON.stringify(err));
+      throw new Error(msg);
     }
 
-    // Сохраняем информацию о пользователе
-    const responsePayload = isRecord(response.payload) ? response.payload : {};
+    const responsePayload = response.payload as { profile?: { contact?: { id?: Id; names?: { firstName?: string; name?: string; lastName?: string }[]; phone?: string; baseUrl?: string; baseRawUrl?: string; photoId?: Id } } } || {};
 
-    // Извлекаем данные пользователя из profile.contact
-    const profile = isRecord(responsePayload.profile) ? responsePayload.profile : null;
-    const contact = profile && isRecord(profile.contact) ? profile.contact : null;
-
-    if (contact) {
-      const names = Array.isArray(contact.names) ? contact.names : [];
-      const name = names.length > 0 && isRecord(names[0]) ? names[0] : {};
+    if (responsePayload.profile && responsePayload.profile.contact) {
+      const contact = responsePayload.profile.contact;
+      const name = contact.names && contact.names.length > 0 ? contact.names[0] : {};
 
       const userData = {
         id: contact.id,
-        firstname: (typeof name.firstName === 'string' && name.firstName) || (typeof name.name === 'string' && name.name) || '',
-        lastname: (typeof name.lastName === 'string' && name.lastName) || '',
+        firstname: name.firstName || name.name || '',
+        lastname: name.lastName || '',
         phone: contact.phone,
         avatar: contact.baseUrl || contact.baseRawUrl,
         photoId: contact.photoId,
         rawData: contact
       };
 
-      this.me = new User(userData as UnknownRecord);
+      this.me = new User(userData);
       const fullName = this.me.fullname || this.me.firstname || 'User';
       console.log(`✅ Синхронизация завершена. Вы вошли как: ${fullName} (ID: ${this.me.id})`);
     } else {
       console.log('⚠️ Данные пользователя не найдены в ответе sync');
     }
 
-    return responsePayload;
+    return responsePayload as ApiValue;
   }
 
   /**
    * Получение информации о текущем пользователе
    */
-  async fetchMyProfile() {
+  async fetchMyProfile(): Promise<void> {
     try {
       console.log('📱 Запрос профиля пользователя...');
       const response = await this.sendAndWait(Opcode.PROFILE, {});
 
-      if (isRecord(response.payload) && isRecord(response.payload.user)) {
-        this.me = new User(response.payload.user);
+      const payload = response.payload as { user?: UserPayload } | undefined;
+      if (payload && payload.user) {
+        this.me = new User(payload.user);
         const name = this.me.fullname || this.me.firstname || 'User';
         console.log(`✅ Профиль загружен: ${name} (ID: ${this.me.id})`);
       }
     } catch (error) {
-      console.error('⚠️ Не удалось загрузить профиль:', getErrorMessage(error));
+      console.error('⚠️ Не удалось загрузить профиль:', (error as Error).message);
     }
   }
 
   /**
    * Подключение с существующей сессией
    */
-  async connectWithSession() {
+  async connectWithSession(): Promise<void> {
     try {
       await this.connect();
 
@@ -550,17 +703,58 @@ class WebMaxClient extends EventEmitter {
   }
 
   /**
-   * Установка WebSocket соединения
+   * Установка соединения (WebSocket или Socket)
    */
   async connect(): Promise<void> {
-    if (this.ws && this.isConnected) {
-      return Promise.resolve();
+    if (this._useSocketTransport) {
+      return this._connectSocket();
+    } else {
+      return this._connectWebSocket();
+    }
+  }
+
+  /**
+   * Подключение через TCP Socket (для IOS/ANDROID)
+   */
+  async _connectSocket(): Promise<void> {
+    if (this._socketTransport && this._socketTransport.socket && !this._socketTransport.socket.destroyed) {
+      this.isConnected = true;
+      return;
     }
 
-    return new Promise<void>((resolve, reject) => {
+    this._socketTransport = new MaxSocketTransport({
+      deviceId: this.deviceId,
+      deviceType: this.userAgent.deviceType,
+      ua: this.userAgent.headerUserAgent,
+      debug: this.debug
+    });
+
+    this._socketTransport.onNotification = (data) => {
+      this.handleSocketNotification(data);
+    };
+
+    await this._socketTransport.connect();
+    await this._socketTransport.handshake(this.userAgent);
+
+    this.isConnected = true;
+    this.reconnectAttempts = 0;
+    this.emit('connected');
+
+    console.log('TCP Socket соединение установлено');
+  }
+
+  /**
+   * Установка WebSocket соединения (для WEB)
+   */
+  async _connectWebSocket(): Promise<void> {
+    if (this.ws && this.isConnected) {
+      return;
+    }
+
+    return new Promise((resolve, reject) => {
       const headers = {
-        'User-Agent': this.userAgent.headerUserAgent,
-        'Origin': this.origin
+        'Origin': this.origin,
+        'User-Agent': this._handshakeUserAgent.headerUserAgent
       };
 
       this.ws = new WebSocket(this.apiUrl, {
@@ -574,7 +768,6 @@ class WebMaxClient extends EventEmitter {
         this.emit('connected');
 
         try {
-          // Выполняем handshake
           await this.handshake();
           resolve();
         } catch (error) {
@@ -587,14 +780,20 @@ class WebMaxClient extends EventEmitter {
       });
 
       this.ws.on('error', (error: Error) => {
-        console.error('WebSocket ошибка:', error.message);
-        this.triggerHandlers(EventTypes.ERROR, error);
+        console.error('WebSocket ошибка:', (error as Error).message);
+        this.triggerHandlers(EventTypes.ERROR, error as Error);
         reject(error);
       });
 
       this.ws.on('close', () => {
         console.log('WebSocket соединение закрыто');
         this.isConnected = false;
+        const err = new Error('Соединение закрыто');
+        for (const [, pending] of this.pendingRequests) {
+          if (pending.timeoutId) clearTimeout(pending.timeoutId);
+          pending.reject(err);
+        }
+        this.pendingRequests.clear();
         this.triggerHandlers(EventTypes.DISCONNECT);
         this.handleReconnect();
       });
@@ -604,18 +803,18 @@ class WebMaxClient extends EventEmitter {
   /**
    * Handshake после подключения
    */
-  async handshake() {
+  async handshake(): Promise<ApiResponse> {
     console.log('Выполняется handshake...');
 
     const payload = {
       deviceId: this.deviceId,
-      userAgent: this.userAgent.toJSON()
+      userAgent: this._handshakeUserAgent.toJSON()
     };
 
     const response = await this.sendAndWait(Opcode.SESSION_INIT, payload);
 
-    if (isRecord(response.payload) && response.payload.error) {
-      throw new Error(`Handshake error: ${JSON.stringify(response.payload.error)}`);
+    if (response.payload && (response.payload as { error?: ApiValue }).error) {
+      throw new Error(`Handshake error: ${JSON.stringify((response.payload as { error?: ApiValue }).error)}`);
     }
 
     console.log('Handshake выполнен успешно');
@@ -623,9 +822,44 @@ class WebMaxClient extends EventEmitter {
   }
 
   /**
+   * Обработка уведомлений от Socket транспорта
+   */
+  async handleSocketNotification(data: { opcode: number; payload?: ApiValue; seq?: number }): Promise<void> {
+    try {
+      if (this.debug && data.opcode !== Opcode.PING) {
+        const payload = (data.payload as { error?: ApiValue })?.error ? ` error=${JSON.stringify((data.payload as { error?: ApiValue }).error)}` : '';
+        console.log(`📥 ${getOpcodeName(data.opcode)} (seq=${data.seq})${payload}`);
+      }
+
+      switch (data.opcode) {
+        case Opcode.NOTIF_MESSAGE:
+          await this.handleNewMessage(data.payload as MessagePayload);
+          break;
+
+        case Opcode.NOTIF_MSG_DELETE:
+          await this.handleRemovedMessage(data.payload as MessagePayload);
+          break;
+
+        case Opcode.NOTIF_CHAT:
+          await this.handleChatAction(data.payload as ChatActionPayload);
+          break;
+
+        case Opcode.PING:
+          break;
+
+        default:
+          this.emit('raw_message', data);
+      }
+    } catch (error) {
+      console.error('Ошибка при обработке Socket уведомления:', error);
+      await this.triggerHandlers(EventTypes.ERROR, error as Error);
+    }
+  }
+
+  /**
    * Обработка переподключения
    */
-  handleReconnect() {
+  handleReconnect(): void {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       console.log(`Попытка переподключения ${this.reconnectAttempts}/${this.maxReconnectAttempts}...`);
@@ -639,24 +873,22 @@ class WebMaxClient extends EventEmitter {
   }
 
   /**
-   * Обработка входящих сообщений
+   * Обработка входящих сообщений (WebSocket)
    */
-  async handleMessage(data: WebSocket.RawData) {
+  async handleMessage(data: WebSocket.RawData): Promise<void> {
     try {
-      const raw = typeof data === 'string' ? data : data.toString();
-      const message = JSON.parse(raw) as ServerMessage;
+      const message = JSON.parse(data.toString()) as ApiResponse;
 
-      // Отладочное логирование (раскомментируйте при необходимости)
-      // if (message.opcode !== Opcode.PING) {
-      //   console.log(`📥 Получено: ${getOpcodeName(message.opcode)} (seq=${message.seq})`);
-      // }
+      if (this.debug && message.opcode !== Opcode.PING) {
+        const payload = (message.payload as { error?: ApiValue })?.error ? ` error=${JSON.stringify((message.payload as { error?: ApiValue }).error)}` : '';
+        console.log(`📥 ${getOpcodeName(message.opcode || 0)} (seq=${message.seq})${payload}`);
+      }
 
-      // Обработка ответов на запросы по seq
-      if (typeof message.seq === 'number' && this.pendingRequests.has(message.seq)) {
+      if (message.seq && this.pendingRequests.has(message.seq)) {
         const pending = this.pendingRequests.get(message.seq);
         this.pendingRequests.delete(message.seq);
 
-        if (pending?.timeoutId) {
+        if (pending && pending.timeoutId) {
           clearTimeout(pending.timeoutId);
         }
 
@@ -664,22 +896,20 @@ class WebMaxClient extends EventEmitter {
         return;
       }
 
-      // Обработка уведомлений
       switch (message.opcode) {
         case Opcode.NOTIF_MESSAGE:
-          await this.handleNewMessage(message.payload || {});
+          await this.handleNewMessage(message.payload as MessagePayload);
           break;
 
-        case NOTIF_MSG_DELETE:
-          await this.handleRemovedMessage(message.payload || {});
+        case Opcode.NOTIF_MSG_DELETE:
+          await this.handleRemovedMessage(message.payload as MessagePayload);
           break;
 
         case Opcode.NOTIF_CHAT:
-          await this.handleChatAction(message.payload || {});
+          await this.handleChatAction(message.payload as ChatActionPayload);
           break;
 
         case Opcode.PING:
-          // Отвечаем на ping (без логирования)
           await this.sendPong();
           break;
 
@@ -688,20 +918,17 @@ class WebMaxClient extends EventEmitter {
       }
     } catch (error) {
       console.error('Ошибка при обработке сообщения:', error);
-      await this.triggerHandlers(EventTypes.ERROR, error);
+      await this.triggerHandlers(EventTypes.ERROR, error as Error);
     }
   }
 
   /**
    * Отправка pong ответа на ping
    */
-  async sendPong() {
+  async sendPong(): Promise<void> {
     try {
-      if (!this.ws) {
-        return;
-      }
       const message = this.makeMessage(Opcode.PING, {});
-      this.ws.send(JSON.stringify(message));
+      this.ws?.send(JSON.stringify(message));
     } catch (error) {
       console.error('Ошибка при отправке pong:', error);
     }
@@ -710,19 +937,15 @@ class WebMaxClient extends EventEmitter {
   /**
    * Обработка нового сообщения
    */
-  async handleNewMessage(data: UnknownRecord) {
-    // Извлекаем данные сообщения из правильного места
-    // Структура: { chatId, message: { sender, id, text, ... } }
-    const messageData = isRecord(data.message) ? data.message : data;
+  async handleNewMessage(data: MessagePayload): Promise<void> {
+    const messageData: MessagePayload = (data as { message?: MessagePayload }).message || data;
 
-    // Добавляем chatId если его нет в messageData
-    if (!('chatId' in messageData) && data.chatId) {
-      messageData.chatId = data.chatId;
+    if (!messageData.chatId && (data as { chatId?: Id }).chatId) {
+      messageData.chatId = (data as { chatId?: Id }).chatId || null;
     }
 
     const message = new Message(messageData, this);
 
-    // Попытка загрузить информацию об отправителе если её нет
     if (!message.sender && message.senderId && message.senderId !== this.me?.id) {
       await message.fetchSender();
     }
@@ -733,7 +956,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Обработка удаленного сообщения
    */
-  async handleRemovedMessage(data: UnknownRecord) {
+  async handleRemovedMessage(data: MessagePayload): Promise<void> {
     const message = new Message(data, this);
     await this.triggerHandlers(EventTypes.MESSAGE_REMOVED, message);
   }
@@ -741,7 +964,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Обработка действия в чате
    */
-  async handleChatAction(data: UnknownRecord) {
+  async handleChatAction(data: ChatActionPayload): Promise<void> {
     const action = new ChatAction(data, this);
     await this.triggerHandlers(EventTypes.CHAT_ACTION, action);
   }
@@ -749,7 +972,7 @@ class WebMaxClient extends EventEmitter {
   /**
    * Создает сообщение в протоколе Max API
    */
-  makeMessage(opcode: number, payload: UnknownRecord, cmd = 0): ClientMessage {
+  makeMessage(opcode: number, payload: ApiValue, cmd: number = 0): { ver: number; cmd: number; seq: number; opcode: number; payload: ApiValue } {
     this.seq += 1;
 
     return {
@@ -762,22 +985,23 @@ class WebMaxClient extends EventEmitter {
   }
 
   /**
-   * Отправка запроса через WebSocket и ожидание ответа
+   * Отправка запроса и ожидание ответа
    */
-  sendAndWait(opcode: number, payload: UnknownRecord, cmd = 0, timeout = 20000): Promise<ServerMessage> {
-    return new Promise((resolve, reject) => {
-      if (!this.isConnected || !this.ws) {
-        reject(new Error('WebSocket не подключен'));
-        return;
-      }
+  async sendAndWait(opcode: number, payload: ApiValue, cmd: number = 0, timeout: number = 20000): Promise<ApiResponse> {
+    if (!this.isConnected) {
+      throw new Error('Соединение не установлено');
+    }
 
+    if (this._useSocketTransport && this._socketTransport) {
+      return await this._socketTransport.sendAndWait(opcode, payload, cmd, timeout);
+    }
+
+    return new Promise((resolve, reject) => {
       const message = this.makeMessage(opcode, payload, cmd);
       const seq = message.seq;
 
-      const pendingRequest: PendingRequest = { resolve, reject };
-      this.pendingRequests.set(seq, pendingRequest);
+      this.pendingRequests.set(seq, { resolve, reject });
 
-      // Таймаут для запроса
       const timeoutId = setTimeout(() => {
         if (this.pendingRequests.has(seq)) {
           this.pendingRequests.delete(seq);
@@ -785,23 +1009,50 @@ class WebMaxClient extends EventEmitter {
         }
       }, timeout);
 
-      // Сохраняем timeoutId чтобы можно было отменить
-      pendingRequest.timeoutId = timeoutId;
+      const pending = this.pendingRequests.get(seq);
+      if (pending) pending.timeoutId = timeoutId;
 
-      // Отладочное логирование (раскомментируйте при необходимости)
-      // if (opcode !== Opcode.PING) {
-      //   console.log(`📤 Отправка: ${getOpcodeName(opcode)} (seq=${seq})`);
-      // }
-      this.ws.send(JSON.stringify(message));
+      this.ws?.send(JSON.stringify(message));
     });
   }
 
   /**
-   * Отправка сообщения
+   * Отправка сообщения (с уведомлением)
    */
-  async sendMessage(options: SendMessageOptions) {
+  async sendMessage(options: SendMessageOptions): Promise<Message | ApiValue | null> {
     if (typeof options === 'string') {
       throw new Error('sendMessage требует объект с параметрами: { chatId, text, cid }');
+    }
+
+    const { chatId, text, cid, replyTo, attachments } = options;
+
+    const payload = {
+      chatId: chatId,
+      message: {
+        text: text || '',
+        cid: cid || Date.now(),
+        elements: [],
+        attaches: attachments || [],
+        link: replyTo ? { type: 'REPLY', messageId: replyTo } : null
+      },
+      notify: true
+    };
+
+    const response = await this.sendAndWait(Opcode.MSG_SEND, payload);
+
+    if (response.payload && (response.payload as { message?: MessagePayload }).message) {
+      return new Message((response.payload as { message?: MessagePayload }).message as MessagePayload, this);
+    }
+
+    return response.payload as ApiValue;
+  }
+
+  /**
+   * Отправка сообщения в канал (без уведомления)
+   */
+  async sendMessageChannel(options: SendMessageOptions): Promise<Message | ApiValue | null> {
+    if (typeof options === 'string') {
+      throw new Error('sendMessageChannel требует объект с параметрами: { chatId, text, cid }');
     }
 
     const { chatId, text, cid, replyTo, attachments } = options;
@@ -820,17 +1071,17 @@ class WebMaxClient extends EventEmitter {
 
     const response = await this.sendAndWait(Opcode.MSG_SEND, payload);
 
-    if (isRecord(response.payload) && isRecord(response.payload.message)) {
-      return new Message(response.payload.message, this);
+    if (response.payload && (response.payload as { message?: MessagePayload }).message) {
+      return new Message((response.payload as { message?: MessagePayload }).message as MessagePayload, this);
     }
 
-    return response.payload || null;
+    return response.payload as ApiValue;
   }
 
   /**
    * Редактирование сообщения
    */
-  async editMessage(options: EditMessageOptions) {
+  async editMessage(options: EditMessageOptions): Promise<Message | ApiValue> {
     const { messageId, chatId, text } = options;
 
     const payload = {
@@ -843,17 +1094,17 @@ class WebMaxClient extends EventEmitter {
 
     const response = await this.sendAndWait(Opcode.MSG_EDIT, payload);
 
-    if (isRecord(response.payload) && isRecord(response.payload.message)) {
-      return new Message(response.payload.message, this);
+    if (response.payload && (response.payload as { message?: MessagePayload }).message) {
+      return new Message((response.payload as { message?: MessagePayload }).message as MessagePayload, this);
     }
 
-    return response.payload || null;
+    return response.payload as ApiValue;
   }
 
   /**
    * Удаление сообщения
    */
-  async deleteMessage(options: DeleteMessageOptions) {
+  async deleteMessage(options: DeleteMessageOptions): Promise<boolean> {
     const { messageId, chatId, forMe } = options;
 
     const payload = {
@@ -868,98 +1119,32 @@ class WebMaxClient extends EventEmitter {
   }
 
   /**
-   * Получить ссылку для скачивания файла (opcode 88)
-   */
-  async getFileLink(params: GetFileLinkParams): Promise<{ url: string; unsafe: boolean }> {
-    const payload = {
-      fileId: params.fileId,
-      chatId: params.chatId,
-      messageId: params.messageId,
-    };
-
-    const response = await this.sendAndWait(Opcode.FILE_DOWNLOAD, payload);
-
-    if (!isRecord(response.payload)) {
-      throw new Error('Некорректный ответ от сервера: payload отсутствует');
-    }
-
-    if (response.payload.error) {
-      throw new Error(`File link error: ${JSON.stringify(response.payload.error)}`);
-    }
-
-    const url = response.payload.url;
-    if (typeof url !== 'string' || !url) {
-      throw new Error('Не удалось получить ссылку для скачивания файла');
-    }
-
-    const unsafe = typeof response.payload.unsafe === 'boolean' ? response.payload.unsafe : false;
-
-    return { url, unsafe };
-  }
-
-  /**
-   * Скачать файл по ссылке и вернуть Buffer или путь к файлу
-   */
-  async downloadFile(params: DownloadFileParams): Promise<Buffer | DownloadToFileResult> {
-    const { output, ...linkParams } = params;
-    const { url, unsafe } = await this.getFileLink(linkParams);
-
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Ошибка скачивания файла: ${response.status} ${response.statusText}`);
-    }
-
-    if (output) {
-      const outputPath = path.resolve(output);
-      const dirPath = path.dirname(outputPath);
-      await mkdir(dirPath, { recursive: true });
-
-      if (!response.body) {
-        throw new Error('Ответ не содержит тела для скачивания файла');
-      }
-
-      const webStream = response.body as WebReadableStream<Uint8Array>;
-      await pipeline(Readable.fromWeb(webStream), createWriteStream(outputPath));
-
-      return { path: outputPath, url, unsafe };
-    }
-
-    const data = await response.arrayBuffer();
-    return Buffer.from(data);
-  }
-
-  /**
    * Получение информации о пользователе по ID
    */
-  async getUser(userId: string | number) {
+  async getUser(userId: Id): Promise<User | null> {
     const payload = {
       contactIds: [userId]
     };
 
     const response = await this.sendAndWait(Opcode.CONTACT_INFO, payload);
 
-    if (isRecord(response.payload) && Array.isArray(response.payload.contacts) && response.payload.contacts.length > 0) {
-      const contact = response.payload.contacts[0];
+    if (response.payload && (response.payload as { contacts?: MessagePayload[] }).contacts && (response.payload as { contacts?: MessagePayload[] }).contacts?.length) {
+      const contact = (response.payload as { contacts?: MessagePayload[] }).contacts?.[0] as MessagePayload;
 
-      if (!isRecord(contact)) {
-        return null;
-      }
-
-      // Преобразуем структуру контакта в понятный User формат
-      const names = Array.isArray(contact.names) ? contact.names : [];
-      const name = names.length > 0 && isRecord(names[0]) ? names[0] : {};
+      const name = (contact as { names?: { firstName?: string; name?: string; lastName?: string }[] }).names;
+      const primaryName = name && name.length > 0 ? name[0] : {};
 
       const userData = {
-        id: contact.id,
-        firstname: (typeof name.firstName === 'string' && name.firstName) || (typeof name.name === 'string' && name.name) || '',
-        lastname: (typeof name.lastName === 'string' && name.lastName) || '',
-        phone: contact.phone,
-        avatar: contact.baseUrl || contact.baseRawUrl,
-        photoId: contact.photoId,
+        id: (contact as { id?: Id }).id,
+        firstname: primaryName.firstName || primaryName.name || '',
+        lastname: primaryName.lastName || '',
+        phone: (contact as { phone?: string }).phone,
+        avatar: (contact as { baseUrl?: string; baseRawUrl?: string }).baseUrl || (contact as { baseRawUrl?: string }).baseRawUrl,
+        photoId: (contact as { photoId?: Id }).photoId,
         rawData: contact
       };
 
-      return new User(userData as UnknownRecord);
+      return new User(userData);
     }
 
     return null;
@@ -968,24 +1153,29 @@ class WebMaxClient extends EventEmitter {
   /**
    * Получение списка чатов
    */
-  async getChats(marker = 0) {
+  async getChats(marker: number = 0): Promise<ApiValue[]> {
+    if (this._useSocketTransport && this._socketTransport) {
+      return await this._socketTransport.getChats(marker);
+    }
+
     const payload = {
       marker: marker
     };
 
     const response = await this.sendAndWait(Opcode.CHATS_LIST, payload);
 
-    if (isRecord(response.payload) && Array.isArray(response.payload.chats)) {
-      return response.payload.chats;
-    }
-
-    return [];
+    return (response.payload as { chats?: ApiValue[] })?.chats || [];
   }
 
   /**
    * Получение истории сообщений
    */
-  async getHistory(chatId: string | number, from = Date.now(), backward = 200, forward = 0) {
+  async getHistory(chatId: Id, from: number = Date.now(), backward: number = 200, forward: number = 0): Promise<Message[]> {
+    if (this._useSocketTransport && this._socketTransport) {
+      const messages = await this._socketTransport.getHistory(chatId, from, backward, forward);
+      return messages.map(msg => new Message(msg as MessagePayload, this));
+    }
+
     const payload = {
       chatId: chatId,
       from: from,
@@ -996,72 +1186,76 @@ class WebMaxClient extends EventEmitter {
 
     const response = await this.sendAndWait(Opcode.CHAT_HISTORY, payload);
 
-    const messages = isRecord(response.payload) && Array.isArray(response.payload.messages)
-      ? response.payload.messages
-      : [];
-    return messages.filter(isRecord).map((msg) => new Message(msg, this));
+    const messages = (response.payload as { messages?: MessagePayload[] })?.messages || [];
+    return messages.map(msg => new Message(msg as MessagePayload, this));
+  }
+
+  async getFileLink(options: FileLinkRequest): Promise<FileLinkResult> {
+    if (!options || typeof options !== 'object') {
+      throw new Error('getFileLink требует объект с параметрами: { fileId, chatId, messageId }');
+    }
+    const { fileId, chatId, messageId } = options;
+    if (!fileId || !chatId || !messageId) {
+      throw new Error('getFileLink требует fileId, chatId и messageId');
+    }
+    const response = await this.sendAndWait(Opcode.FILE_DOWNLOAD, { fileId, chatId, messageId });
+    const payload = response.payload as FileLinkPayload || {};
+    if ((payload as { error?: ApiValue }).error) {
+      const msg = (payload as { localizedMessage?: string; error?: { message?: string } }).localizedMessage || (payload as { error?: { message?: string } }).error?.message || JSON.stringify((payload as { error?: ApiValue }).error);
+      throw new Error(msg);
+    }
+    const link = normalizeFileLinkPayload(payload);
+    if (!link) {
+      throw new Error('Не удалось получить ссылку на файл');
+    }
+    return link;
+  }
+
+  async downloadFile(options: DownloadFileRequest & { output: string }): Promise<DownloadFileSaved>;
+  async downloadFile(options: DownloadFileRequest): Promise<DownloadFileResult>;
+  async downloadFile(options: DownloadFileRequest): Promise<DownloadFileResult> {
+    if (!options || typeof options !== 'object') {
+      throw new Error('downloadFile требует объект с параметрами: { fileId, chatId, messageId, output? }');
+    }
+    const { output } = options;
+    const link = await this.getFileLink(options);
+    if (output) {
+      if (typeof output !== 'string') {
+        throw new Error('downloadFile: output должен быть строкой пути');
+      }
+      const savedPath = await downloadToFile(link.url, output);
+      return { path: savedPath, url: link.url, unsafe: link.unsafe };
+    }
+    return await fetchBufferFromUrl(link.url);
   }
 
   /**
    * Выполнение зарегистрированных обработчиков
    */
-  async triggerHandlers(eventType: typeof EventTypes.START): Promise<void>;
-  async triggerHandlers(eventType: typeof EventTypes.DISCONNECT): Promise<void>;
-  async triggerHandlers(eventType: typeof EventTypes.MESSAGE, data: Message): Promise<void>;
-  async triggerHandlers(eventType: typeof EventTypes.MESSAGE_REMOVED, data: Message): Promise<void>;
-  async triggerHandlers(eventType: typeof EventTypes.CHAT_ACTION, data: ChatAction): Promise<void>;
-  async triggerHandlers(eventType: typeof EventTypes.ERROR, data: unknown): Promise<void>;
-  async triggerHandlers(eventType: string, data?: unknown): Promise<void> {
-    try {
-      switch (eventType) {
-        case EventTypes.START:
-          for (const handler of this.handlers[EventTypes.START]) {
-            await handler();
-          }
-          break;
+  async triggerHandlers(eventType: keyof WebMaxClient['handlers'], data?: Message | ChatAction | Error): Promise<void> {
+    const handlers = this.handlers[eventType] || [];
 
-        case EventTypes.DISCONNECT:
-          for (const handler of this.handlers[EventTypes.DISCONNECT]) {
-            await handler();
-          }
-          break;
-
-        case EventTypes.MESSAGE:
-          for (const handler of this.handlers[EventTypes.MESSAGE]) {
-            await handler(data as Message);
-          }
-          break;
-
-        case EventTypes.MESSAGE_REMOVED:
-          for (const handler of this.handlers[EventTypes.MESSAGE_REMOVED]) {
-            await handler(data as Message);
-          }
-          break;
-
-        case EventTypes.CHAT_ACTION:
-          for (const handler of this.handlers[EventTypes.CHAT_ACTION]) {
-            await handler(data as ChatAction);
-          }
-          break;
-
-        case EventTypes.ERROR:
-          for (const handler of this.handlers[EventTypes.ERROR]) {
-            await handler(data);
-          }
-          break;
-
-        default:
-          break;
+    for (const handler of handlers) {
+      try {
+        if (data !== undefined) {
+          await (handler as (arg: Message | ChatAction | Error) => void | Promise<void>)(data);
+        } else {
+          await (handler as () => void | Promise<void>)();
+        }
+      } catch (error) {
+        console.error(`Ошибка в обработчике ${eventType}:`, error);
       }
-    } catch (error) {
-      console.error(`Ошибка в обработчике ${eventType}:`, error);
     }
   }
 
   /**
    * Остановка клиента
    */
-  async stop() {
+  async stop(): Promise<void> {
+    if (this._socketTransport) {
+      await this._socketTransport.close();
+      this._socketTransport = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -1074,11 +1268,9 @@ class WebMaxClient extends EventEmitter {
   /**
    * Выход из аккаунта
    */
-  async logout() {
+  async logout(): Promise<void> {
     await this.stop();
     this.session.destroy();
     console.log('Выход выполнен, сессия удалена');
   }
 }
-
-export default WebMaxClient;

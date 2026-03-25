@@ -9,7 +9,7 @@ exports.ChatActions = {
     STICKER: 'sticker',
     FILE: 'file',
     RECORDING_VOICE: 'recording_voice',
-    RECORDING_VIDEO: 'recording_video',
+    RECORDING_VIDEO: 'recording_video'
 };
 exports.EventTypes = {
     START: 'start',
@@ -17,7 +17,7 @@ exports.EventTypes = {
     MESSAGE_REMOVED: 'message_removed',
     CHAT_ACTION: 'chat_action',
     ERROR: 'error',
-    DISCONNECT: 'disconnect',
+    DISCONNECT: 'disconnect'
 };
 exports.MessageTypes = {
     TEXT: 'text',
@@ -25,5 +25,5 @@ exports.MessageTypes = {
     VIDEO: 'video',
     AUDIO: 'audio',
     DOCUMENT: 'document',
-    STICKER: 'sticker',
+    STICKER: 'sticker'
 };

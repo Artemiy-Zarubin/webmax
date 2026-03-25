@@ -6,7 +6,7 @@ export const ChatActions = {
     STICKER: 'sticker',
     FILE: 'file',
     RECORDING_VOICE: 'recording_voice',
-    RECORDING_VIDEO: 'recording_video',
+    RECORDING_VIDEO: 'recording_video'
 };
 export const EventTypes = {
     START: 'start',
@@ -14,7 +14,7 @@ export const EventTypes = {
     MESSAGE_REMOVED: 'message_removed',
     CHAT_ACTION: 'chat_action',
     ERROR: 'error',
-    DISCONNECT: 'disconnect',
+    DISCONNECT: 'disconnect'
 };
 export const MessageTypes = {
     TEXT: 'text',
@@ -22,6 +22,5 @@ export const MessageTypes = {
     VIDEO: 'video',
     AUDIO: 'audio',
     DOCUMENT: 'document',
-    STICKER: 'sticker',
+    STICKER: 'sticker'
 };
-//# sourceMappingURL=constants.js.map

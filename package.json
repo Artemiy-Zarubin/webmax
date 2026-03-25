@@ -1,28 +1,28 @@
 {
 	"name": "webmax-ts",
-	"version": "2.3.2",
-	"description": "Node.js client for Max Messenger with QR code authentication (TypeScript, ESM)",
-	"type": "module",
+	"version": "3.0.0",
+	"description": "TypeScript-first Node.js client for Max Messenger with QR and token authentication(fork)",
 	"main": "./dist/cjs/index.js",
 	"module": "./dist/esm/index.js",
-	"types": "./dist/index.d.ts",
+	"types": "./dist/types/index.d.ts",
 	"exports": {
 		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/esm/index.js",
-			"require": "./dist/cjs/index.js"
+			"types": "./dist/types/index.d.ts",
+			"require": "./dist/cjs/index.js",
+			"import": "./dist/esm/index.js"
 		}
 	},
-	"files": [
-		"dist/",
-		"README.md"
-	],
 	"scripts": {
-		"build": "npm run build:esm && npm run build:cjs",
-		"build:esm": "tsc -p tsconfig.json",
-		"build:cjs": "tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({ type: 'commonjs' }))\"",
-		"typecheck": "tsc -p tsconfig.json --noEmit",
-		"prepublishOnly": "npm run build"
+		"start": "node example-ios.js",
+		"example": "node example.js",
+		"example:token": "node example-token.js",
+		"example:ios": "node example-ios.js",
+		"typecheck": "tsc -p tsconfig.base.json --noEmit",
+		"build:esm": "tsc -p tsconfig.esm.json",
+		"build:cjs": "tsc -p tsconfig.cjs.json",
+		"build:types": "tsc -p tsconfig.types.json",
+		"build": "npm run build:esm && npm run build:cjs && npm run build:types",
+		"prepublishOnly": "npm run typecheck && npm run build"
 	},
 	"keywords": [
 		"max",
@@ -32,8 +32,13 @@
 		"api",
 		"userbot",
 		"websocket",
+		"qr-code",
+		"qr-auth",
+		"token-auth",
 		"typescript",
-		"esm"
+		"esm",
+		"cjs",
+		"nodejs"
 	],
 	"author": "Artemiy Zarubin",
 	"license": "MIT",
@@ -46,17 +51,26 @@
 	},
 	"homepage": "https://github.com/Artemiy-Zarubin/webmax-ts#readme",
 	"dependencies": {
+		"@msgpack/msgpack": "^3.1.3",
+		"lz4": "^0.6.5",
 		"qrcode-terminal": "^0.12.0",
 		"uuid": "^9.0.0",
 		"ws": "^8.18.0"
 	},
+	"optionalDependencies": {
+		"lz4": "^0.6.5"
+	},
 	"devDependencies": {
 		"@types/node": "^22.13.5",
-		"@types/uuid": "^10.0.0",
-		"@types/ws": "^8.18.1",
-		"typescript": "^5.7.3"
+		"@types/uuid": "^9.0.8",
+		"@types/ws": "^8.5.12",
+		"typescript": "^5.6.3"
 	},
 	"engines": {
-		"node": ">=18"
-	}
+		"node": ">=18.0.0"
+	},
+	"files": [
+		"dist",
+		"README.md"
+	]
 }

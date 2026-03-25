@@ -1,46 +1,155 @@
+import fs from 'fs';
+import path from 'path';
+import http from 'http';
+import https from 'https';
 import WebSocket from 'ws';
-import { EventEmitter } from 'events';
+import EventEmitter from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import qrcode from 'qrcode-terminal';
-import { createWriteStream } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import SessionManager from './session.js';
-import { Message, ChatAction, User } from './entities/index.js';
-import { EventTypes } from './constants.js';
-import { Opcode } from './opcodes.js';
-import { UserAgentPayload } from './userAgent.js';
-const isRecord = (value) => typeof value === 'object' && value !== null;
-const NOTIF_MSG_DELETE = Opcode['NOTIF_MSG_DELETE'];
-const getErrorMessage = (error) => {
-    if (error instanceof Error) {
-        return error.message;
+import { SessionManager } from './session';
+import { MaxSocketTransport } from './socketTransport';
+import { Message, ChatAction, User } from './entities';
+import { EventTypes } from './constants';
+import { Opcode, getOpcodeName } from './opcodes';
+import { UserAgentPayload } from './userAgent';
+/**
+ * Загружает конфиг: { token, agent }
+ */
+function loadSessionConfig(configPath) {
+    let resolved;
+    if (path.isAbsolute(configPath)) {
+        resolved = configPath;
     }
-    return String(error);
-};
+    else if (!/[\\/]/.test(configPath) && !configPath.endsWith('.json')) {
+        resolved = path.join(process.cwd(), 'config', `${configPath}.json`);
+    }
+    else {
+        resolved = path.join(process.cwd(), configPath);
+    }
+    if (!fs.existsSync(resolved)) {
+        throw new Error(`Конфиг не найден: ${resolved}`);
+    }
+    const data = fs.readFileSync(resolved, 'utf8');
+    return JSON.parse(data);
+}
+function normalizeFileLinkPayload(payload) {
+    if (!payload || typeof payload !== 'object')
+        return null;
+    const url = payload.url || payload.link || payload.downloadUrl || payload.fileUrl || payload.href || null;
+    const unsafe = payload.unsafe || payload.isUnsafe || false;
+    if (!url)
+        return null;
+    return { url, unsafe };
+}
+function fetchBufferFromUrl(url, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+        const client = url.startsWith('https://') ? https : http;
+        const req = client.get(url, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                res.resume();
+                return resolve(fetchBufferFromUrl(res.headers.location, timeout));
+            }
+            if (res.statusCode && res.statusCode >= 400) {
+                res.resume();
+                return reject(new Error('Не удалось скачать файл. HTTP ' + res.statusCode));
+            }
+            const chunks = [];
+            res.on('data', (chunk) => chunks.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+        });
+        req.on('error', reject);
+        req.setTimeout(timeout, () => {
+            req.destroy(new Error('Таймаут скачивания файла'));
+        });
+    });
+}
+function downloadToFile(url, outputPath, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+        const client = url.startsWith('https://') ? https : http;
+        const req = client.get(url, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                res.resume();
+                return resolve(downloadToFile(res.headers.location, outputPath, timeout));
+            }
+            if (res.statusCode && res.statusCode >= 400) {
+                res.resume();
+                return reject(new Error('Не удалось скачать файл. HTTP ' + res.statusCode));
+            }
+            const dir = path.dirname(outputPath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            const stream = fs.createWriteStream(outputPath);
+            res.pipe(stream);
+            stream.on('finish', () => resolve(outputPath));
+            stream.on('error', reject);
+        });
+        req.on('error', reject);
+        req.setTimeout(timeout, () => {
+            req.destroy(new Error('Таймаут скачивания файла'));
+        });
+    });
+}
 /**
  * Основной клиент для работы с API Max
  */
-class WebMaxClient extends EventEmitter {
+export class WebMaxClient extends EventEmitter {
     constructor(options = {}) {
         super();
         this.phone = options.phone || null;
         this.sessionName = options.name || options.session || 'default';
         this.apiUrl = options.apiUrl || 'wss://ws-api.oneme.ru/websocket';
+        let token = options.token || null;
+        let agent = options.ua || options.agent || options.headerUserAgent || null;
+        let configObj = {};
+        const configPath = options.configPath || options.config;
+        if (configPath) {
+            configObj = loadSessionConfig(configPath);
+            token = token || configObj.token || null;
+            agent = agent || configObj.agent || configObj.ua || configObj.headerUserAgent || null;
+        }
+        this._providedToken = token;
+        this._saveTokenToSession = options.saveToken !== false;
         this.origin = 'https://web.max.ru';
         this.session = new SessionManager(this.sessionName);
-        // UserAgent
-        this.userAgent = options.userAgent || new UserAgentPayload({
-            appVersion: options.appVersion || '26.3.9'
-        });
-        // Device ID
-        const storedDeviceId = this.session.get('deviceId');
-        this.deviceId = options.deviceId || storedDeviceId || uuidv4();
-        if (!storedDeviceId) {
+        const userAgentFromOptions = options.userAgent;
+        const resolvedUserAgentOptions = userAgentFromOptions
+            ? (userAgentFromOptions instanceof UserAgentPayload ? userAgentFromOptions.toJSON() : userAgentFromOptions)
+            : null;
+        const deviceTypeMap = { 1: 'WEB', 2: 'IOS', 3: 'ANDROID' };
+        const rawDeviceType = options.deviceType
+            ?? resolvedUserAgentOptions?.deviceType
+            ?? configObj.device_type
+            ?? configObj.deviceType
+            ?? 'WEB';
+        const deviceType = deviceTypeMap[rawDeviceType] || rawDeviceType || 'WEB';
+        const uaString = agent
+            || resolvedUserAgentOptions?.headerUserAgent
+            || configObj.headerUserAgent
+            || configObj.ua
+            || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+        const webDefaults = {
+            deviceType: String(deviceType),
+            locale: resolvedUserAgentOptions?.locale || configObj.locale || 'ru',
+            deviceLocale: resolvedUserAgentOptions?.deviceLocale || configObj.deviceLocale || configObj.locale || 'ru',
+            osVersion: resolvedUserAgentOptions?.osVersion || configObj.osVersion || (deviceType === 'IOS' ? '18.6.2' : deviceType === 'ANDROID' ? '14' : 'Linux'),
+            deviceName: resolvedUserAgentOptions?.deviceName || configObj.deviceName || (deviceType === 'IOS' ? 'Safari' : deviceType === 'ANDROID' ? 'Chrome' : 'Chrome'),
+            headerUserAgent: uaString,
+            appVersion: resolvedUserAgentOptions?.appVersion || configObj.appVersion || '26.3.9',
+            screen: resolvedUserAgentOptions?.screen || configObj.screen || (deviceType === 'IOS' ? '390x844 3.0x' : deviceType === 'ANDROID' ? '360x780 3.0x' : '1080x1920 1.0x'),
+            timezone: resolvedUserAgentOptions?.timezone || configObj.timezone || 'Europe/Moscow',
+            buildNumber: resolvedUserAgentOptions?.buildNumber ?? configObj.buildNumber,
+            clientSessionId: resolvedUserAgentOptions?.clientSessionId || configObj.clientSessionId || this.session.get('clientSessionId') || undefined,
+            release: resolvedUserAgentOptions?.release || configObj.release
+        };
+        this._handshakeUserAgent = new UserAgentPayload(webDefaults);
+        this.userAgent = this._handshakeUserAgent;
+        this.deviceId = options.deviceId || this.session.get('deviceId') || uuidv4();
+        if (!this.session.get('deviceId')) {
             this.session.set('deviceId', this.deviceId);
         }
+        this._useSocketTransport = (deviceType === 'IOS' || deviceType === 'ANDROID');
+        this._socketTransport = null;
         this.ws = null;
         this.me = null;
         this.isConnected = false;
@@ -48,7 +157,6 @@ class WebMaxClient extends EventEmitter {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = options.maxReconnectAttempts || 5;
         this.reconnectDelay = options.reconnectDelay || 3000;
-        // Protocol fields
         this.seq = 0;
         this.ver = 11;
         this.handlers = {
@@ -61,6 +169,7 @@ class WebMaxClient extends EventEmitter {
         };
         this.messageQueue = [];
         this.pendingRequests = new Map();
+        this.debug = options.debug || process.env.DEBUG === '1';
     }
     /**
      * Регистрация обработчика события start
@@ -70,7 +179,6 @@ class WebMaxClient extends EventEmitter {
             this.handlers[EventTypes.START].push(handler);
             return handler;
         }
-        // Поддержка декоратора
         return (fn) => {
             this.handlers[EventTypes.START].push(fn);
             return fn;
@@ -134,20 +242,32 @@ class WebMaxClient extends EventEmitter {
     async start() {
         try {
             console.log('🚀 Запуск WebMax клиента...');
-            // Подключаемся к WebSocket
             await this.connect();
-            // Проверяем наличие сохраненного токена
-            const savedToken = this.session.get('token');
-            if (savedToken) {
-                console.log('✅ Найдена сохраненная сессия');
-                this._token = savedToken;
+            const tokenToUse = this._providedToken || this.session.get('token');
+            if (tokenToUse) {
+                if (this._providedToken) {
+                    console.log('✅ Вход по токену (token auth)');
+                    if (this._saveTokenToSession) {
+                        this.session.set('token', this._providedToken);
+                        this.session.set('deviceId', this.deviceId);
+                    }
+                }
+                else {
+                    console.log('✅ Найдена сохраненная сессия');
+                }
+                this._token = tokenToUse;
                 try {
                     await this.sync();
                     this.isAuthorized = true;
                 }
                 catch (error) {
-                    console.log('⚠️ Сессия истекла, требуется повторная авторизация');
+                    const wasTokenAuth = !!this._providedToken;
                     this.session.clear();
+                    this._providedToken = null;
+                    if (wasTokenAuth) {
+                        throw new Error(`Токен недействителен или сессия истекла. Обновите токен в config. (${error.message})`);
+                    }
+                    console.log('⚠️ Сессия истекла, требуется повторная авторизация');
                     await this.authorize();
                 }
             }
@@ -155,7 +275,6 @@ class WebMaxClient extends EventEmitter {
                 console.log('📱 Требуется авторизация');
                 await this.authorize();
             }
-            // Запускаем обработчики start
             await this.triggerHandlers(EventTypes.START);
             console.log('\n✅ Клиент запущен успешно!');
         }
@@ -171,7 +290,7 @@ class WebMaxClient extends EventEmitter {
     async requestQR() {
         console.log('Запрос QR-кода для авторизации...');
         const response = await this.sendAndWait(Opcode.GET_QR, {});
-        if (isRecord(response.payload) && response.payload.error) {
+        if (response.payload && response.payload.error) {
             throw new Error(`QR request error: ${JSON.stringify(response.payload.error)}`);
         }
         return response.payload;
@@ -181,7 +300,7 @@ class WebMaxClient extends EventEmitter {
      */
     async checkQRStatus(trackId) {
         const response = await this.sendAndWait(Opcode.GET_QR_STATUS, { trackId });
-        if (isRecord(response.payload) && response.payload.error) {
+        if (response.payload && response.payload.error) {
             throw new Error(`QR status error: ${JSON.stringify(response.payload.error)}`);
         }
         return response.payload;
@@ -191,7 +310,7 @@ class WebMaxClient extends EventEmitter {
      */
     async loginByQR(trackId) {
         const response = await this.sendAndWait(Opcode.LOGIN_BY_QR, { trackId });
-        if (isRecord(response.payload) && response.payload.error) {
+        if (response.payload && response.payload.error) {
             throw new Error(`QR login error: ${JSON.stringify(response.payload.error)}`);
         }
         return response.payload;
@@ -202,24 +321,21 @@ class WebMaxClient extends EventEmitter {
     async pollQRStatus(trackId, pollingInterval, expiresAt) {
         console.log('Ожидание сканирования QR-кода...');
         while (true) {
-            // Проверяем не истек ли QR-код
             const now = Date.now();
             if (now >= expiresAt) {
                 throw new Error('QR-код истек. Перезапустите бот для получения нового.');
             }
-            // Ждем указанный интервал
-            await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+            await new Promise(resolve => setTimeout(resolve, pollingInterval));
             try {
                 const statusResponse = await this.checkQRStatus(trackId);
-                if (isRecord(statusResponse) && isRecord(statusResponse.status) && statusResponse.status.loginAvailable) {
+                if (statusResponse.status && statusResponse.status.loginAvailable) {
                     console.log('✅ QR-код отсканирован!');
                     return true;
                 }
-                // Продолжаем опрос
                 process.stdout.write('.');
             }
             catch (error) {
-                console.error('\nОшибка при проверке статуса QR:', getErrorMessage(error));
+                console.error('\nОшибка при проверке статуса QR:', error.message);
                 throw error;
             }
         }
@@ -231,7 +347,7 @@ class WebMaxClient extends EventEmitter {
         try {
             console.log('Запрос QR-кода для авторизации...');
             const qrData = await this.requestQR();
-            if (!isRecord(qrData) || !qrData.qrLink || !qrData.trackId || !qrData.pollingInterval || !qrData.expiresAt) {
+            if (!qrData.qrLink || !qrData.trackId || !qrData.pollingInterval || !qrData.expiresAt) {
                 throw new Error('Неполные данные QR-кода от сервера');
             }
             console.log('\n' + '='.repeat(70));
@@ -240,28 +356,35 @@ class WebMaxClient extends EventEmitter {
             console.log('\n📱 Откройте приложение Max на телефоне');
             console.log('➡️  Настройки → Устройства → Подключить устройство');
             console.log('📸 Отсканируйте QR-код ниже:\n');
-            // Отображаем QR-код в консоли
-            qrcode.generate(String(qrData.qrLink), { small: true }, (qrCode) => {
+            qrcode.generate(qrData.qrLink, { small: true }, (qrCode) => {
                 console.log(qrCode);
             });
             console.log('\n💡 Или откройте ссылку: ' + qrData.qrLink);
             console.log('='.repeat(70) + '\n');
-            // Опрашиваем статус
-            await this.pollQRStatus(String(qrData.trackId), Number(qrData.pollingInterval), Number(qrData.expiresAt));
-            // Получаем токен
+            await this.pollQRStatus(qrData.trackId, qrData.pollingInterval, qrData.expiresAt);
             console.log('\n\nПолучение токена авторизации...');
-            const loginData = await this.loginByQR(String(qrData.trackId));
-            const loginAttrs = isRecord(loginData) && isRecord(loginData.tokenAttrs) ? loginData.tokenAttrs.LOGIN : undefined;
-            const token = isRecord(loginAttrs) ? loginAttrs.token : undefined;
-            if (typeof token !== 'string' || !token) {
+            const loginData = await this.loginByQR(qrData.trackId);
+            const loginAttrs = loginData.tokenAttrs && loginData.tokenAttrs.LOGIN;
+            const token = loginAttrs && loginAttrs.token;
+            if (!token) {
                 throw new Error('Токен не получен из ответа');
             }
             this.session.set('token', token);
             this.session.set('deviceId', this.deviceId);
+            this.session.set('clientSessionId', this.userAgent.clientSessionId);
+            this.session.set('deviceType', 'IOS');
+            this.session.set('headerUserAgent', this.userAgent.headerUserAgent);
+            this.session.set('appVersion', this.userAgent.appVersion);
+            this.session.set('osVersion', this.userAgent.osVersion);
+            this.session.set('deviceName', this.userAgent.deviceName);
+            this.session.set('screen', this.userAgent.screen);
+            this.session.set('timezone', this.userAgent.timezone);
+            this.session.set('locale', this.userAgent.locale);
+            this.session.set('buildNumber', this.userAgent.buildNumber);
             this.isAuthorized = true;
             this._token = token;
             console.log('✅ Авторизация через QR-код успешна!');
-            // Выполняем sync
+            console.log('💡 При следующем запуске будет использоваться TCP Socket транспорт');
             await this.sync();
         }
         catch (error) {
@@ -292,25 +415,23 @@ class WebMaxClient extends EventEmitter {
             contactsSync: 0,
             presenceSync: 0,
             draftsSync: 0,
-            chatsCount: 40,
-            userAgent: this.userAgent.toJSON()
+            chatsCount: 40
         };
+        payload.userAgent = this.userAgent.toJSON();
         const response = await this.sendAndWait(Opcode.LOGIN, payload);
-        if (isRecord(response.payload) && response.payload.error) {
-            throw new Error(`Sync error: ${JSON.stringify(response.payload.error)}`);
+        if (response.payload && response.payload.error) {
+            const err = response.payload.error;
+            const msg = typeof err === 'string' ? err : (response.payload.localizedMessage || JSON.stringify(err));
+            throw new Error(msg);
         }
-        // Сохраняем информацию о пользователе
-        const responsePayload = isRecord(response.payload) ? response.payload : {};
-        // Извлекаем данные пользователя из profile.contact
-        const profile = isRecord(responsePayload.profile) ? responsePayload.profile : null;
-        const contact = profile && isRecord(profile.contact) ? profile.contact : null;
-        if (contact) {
-            const names = Array.isArray(contact.names) ? contact.names : [];
-            const name = names.length > 0 && isRecord(names[0]) ? names[0] : {};
+        const responsePayload = response.payload || {};
+        if (responsePayload.profile && responsePayload.profile.contact) {
+            const contact = responsePayload.profile.contact;
+            const name = contact.names && contact.names.length > 0 ? contact.names[0] : {};
             const userData = {
                 id: contact.id,
-                firstname: (typeof name.firstName === 'string' && name.firstName) || (typeof name.name === 'string' && name.name) || '',
-                lastname: (typeof name.lastName === 'string' && name.lastName) || '',
+                firstname: name.firstName || name.name || '',
+                lastname: name.lastName || '',
                 phone: contact.phone,
                 avatar: contact.baseUrl || contact.baseRawUrl,
                 photoId: contact.photoId,
@@ -332,14 +453,15 @@ class WebMaxClient extends EventEmitter {
         try {
             console.log('📱 Запрос профиля пользователя...');
             const response = await this.sendAndWait(Opcode.PROFILE, {});
-            if (isRecord(response.payload) && isRecord(response.payload.user)) {
-                this.me = new User(response.payload.user);
+            const payload = response.payload;
+            if (payload && payload.user) {
+                this.me = new User(payload.user);
                 const name = this.me.fullname || this.me.firstname || 'User';
                 console.log(`✅ Профиль загружен: ${name} (ID: ${this.me.id})`);
             }
         }
         catch (error) {
-            console.error('⚠️ Не удалось загрузить профиль:', getErrorMessage(error));
+            console.error('⚠️ Не удалось загрузить профиль:', error.message);
         }
     }
     /**
@@ -371,16 +493,51 @@ class WebMaxClient extends EventEmitter {
         }
     }
     /**
-     * Установка WebSocket соединения
+     * Установка соединения (WebSocket или Socket)
      */
     async connect() {
+        if (this._useSocketTransport) {
+            return this._connectSocket();
+        }
+        else {
+            return this._connectWebSocket();
+        }
+    }
+    /**
+     * Подключение через TCP Socket (для IOS/ANDROID)
+     */
+    async _connectSocket() {
+        if (this._socketTransport && this._socketTransport.socket && !this._socketTransport.socket.destroyed) {
+            this.isConnected = true;
+            return;
+        }
+        this._socketTransport = new MaxSocketTransport({
+            deviceId: this.deviceId,
+            deviceType: this.userAgent.deviceType,
+            ua: this.userAgent.headerUserAgent,
+            debug: this.debug
+        });
+        this._socketTransport.onNotification = (data) => {
+            this.handleSocketNotification(data);
+        };
+        await this._socketTransport.connect();
+        await this._socketTransport.handshake(this.userAgent);
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+        this.emit('connected');
+        console.log('TCP Socket соединение установлено');
+    }
+    /**
+     * Установка WebSocket соединения (для WEB)
+     */
+    async _connectWebSocket() {
         if (this.ws && this.isConnected) {
-            return Promise.resolve();
+            return;
         }
         return new Promise((resolve, reject) => {
             const headers = {
-                'User-Agent': this.userAgent.headerUserAgent,
-                'Origin': this.origin
+                'Origin': this.origin,
+                'User-Agent': this._handshakeUserAgent.headerUserAgent
             };
             this.ws = new WebSocket(this.apiUrl, {
                 headers: headers
@@ -391,7 +548,6 @@ class WebMaxClient extends EventEmitter {
                 this.reconnectAttempts = 0;
                 this.emit('connected');
                 try {
-                    // Выполняем handshake
                     await this.handshake();
                     resolve();
                 }
@@ -410,6 +566,13 @@ class WebMaxClient extends EventEmitter {
             this.ws.on('close', () => {
                 console.log('WebSocket соединение закрыто');
                 this.isConnected = false;
+                const err = new Error('Соединение закрыто');
+                for (const [, pending] of this.pendingRequests) {
+                    if (pending.timeoutId)
+                        clearTimeout(pending.timeoutId);
+                    pending.reject(err);
+                }
+                this.pendingRequests.clear();
                 this.triggerHandlers(EventTypes.DISCONNECT);
                 this.handleReconnect();
             });
@@ -422,14 +585,44 @@ class WebMaxClient extends EventEmitter {
         console.log('Выполняется handshake...');
         const payload = {
             deviceId: this.deviceId,
-            userAgent: this.userAgent.toJSON()
+            userAgent: this._handshakeUserAgent.toJSON()
         };
         const response = await this.sendAndWait(Opcode.SESSION_INIT, payload);
-        if (isRecord(response.payload) && response.payload.error) {
+        if (response.payload && response.payload.error) {
             throw new Error(`Handshake error: ${JSON.stringify(response.payload.error)}`);
         }
         console.log('Handshake выполнен успешно');
         return response;
+    }
+    /**
+     * Обработка уведомлений от Socket транспорта
+     */
+    async handleSocketNotification(data) {
+        try {
+            if (this.debug && data.opcode !== Opcode.PING) {
+                const payload = data.payload?.error ? ` error=${JSON.stringify(data.payload.error)}` : '';
+                console.log(`📥 ${getOpcodeName(data.opcode)} (seq=${data.seq})${payload}`);
+            }
+            switch (data.opcode) {
+                case Opcode.NOTIF_MESSAGE:
+                    await this.handleNewMessage(data.payload);
+                    break;
+                case Opcode.NOTIF_MSG_DELETE:
+                    await this.handleRemovedMessage(data.payload);
+                    break;
+                case Opcode.NOTIF_CHAT:
+                    await this.handleChatAction(data.payload);
+                    break;
+                case Opcode.PING:
+                    break;
+                default:
+                    this.emit('raw_message', data);
+            }
+        }
+        catch (error) {
+            console.error('Ошибка при обработке Socket уведомления:', error);
+            await this.triggerHandlers(EventTypes.ERROR, error);
+        }
     }
     /**
      * Обработка переподключения
@@ -447,39 +640,35 @@ class WebMaxClient extends EventEmitter {
         }
     }
     /**
-     * Обработка входящих сообщений
+     * Обработка входящих сообщений (WebSocket)
      */
     async handleMessage(data) {
         try {
-            const raw = typeof data === 'string' ? data : data.toString();
-            const message = JSON.parse(raw);
-            // Отладочное логирование (раскомментируйте при необходимости)
-            // if (message.opcode !== Opcode.PING) {
-            //   console.log(`📥 Получено: ${getOpcodeName(message.opcode)} (seq=${message.seq})`);
-            // }
-            // Обработка ответов на запросы по seq
-            if (typeof message.seq === 'number' && this.pendingRequests.has(message.seq)) {
+            const message = JSON.parse(data.toString());
+            if (this.debug && message.opcode !== Opcode.PING) {
+                const payload = message.payload?.error ? ` error=${JSON.stringify(message.payload.error)}` : '';
+                console.log(`📥 ${getOpcodeName(message.opcode || 0)} (seq=${message.seq})${payload}`);
+            }
+            if (message.seq && this.pendingRequests.has(message.seq)) {
                 const pending = this.pendingRequests.get(message.seq);
                 this.pendingRequests.delete(message.seq);
-                if (pending?.timeoutId) {
+                if (pending && pending.timeoutId) {
                     clearTimeout(pending.timeoutId);
                 }
                 pending?.resolve(message);
                 return;
             }
-            // Обработка уведомлений
             switch (message.opcode) {
                 case Opcode.NOTIF_MESSAGE:
-                    await this.handleNewMessage(message.payload || {});
+                    await this.handleNewMessage(message.payload);
                     break;
-                case NOTIF_MSG_DELETE:
-                    await this.handleRemovedMessage(message.payload || {});
+                case Opcode.NOTIF_MSG_DELETE:
+                    await this.handleRemovedMessage(message.payload);
                     break;
                 case Opcode.NOTIF_CHAT:
-                    await this.handleChatAction(message.payload || {});
+                    await this.handleChatAction(message.payload);
                     break;
                 case Opcode.PING:
-                    // Отвечаем на ping (без логирования)
                     await this.sendPong();
                     break;
                 default:
@@ -496,11 +685,8 @@ class WebMaxClient extends EventEmitter {
      */
     async sendPong() {
         try {
-            if (!this.ws) {
-                return;
-            }
             const message = this.makeMessage(Opcode.PING, {});
-            this.ws.send(JSON.stringify(message));
+            this.ws?.send(JSON.stringify(message));
         }
         catch (error) {
             console.error('Ошибка при отправке pong:', error);
@@ -510,15 +696,11 @@ class WebMaxClient extends EventEmitter {
      * Обработка нового сообщения
      */
     async handleNewMessage(data) {
-        // Извлекаем данные сообщения из правильного места
-        // Структура: { chatId, message: { sender, id, text, ... } }
-        const messageData = isRecord(data.message) ? data.message : data;
-        // Добавляем chatId если его нет в messageData
-        if (!('chatId' in messageData) && data.chatId) {
-            messageData.chatId = data.chatId;
+        const messageData = data.message || data;
+        if (!messageData.chatId && data.chatId) {
+            messageData.chatId = data.chatId || null;
         }
         const message = new Message(messageData, this);
-        // Попытка загрузить информацию об отправителе если её нет
         if (!message.sender && message.senderId && message.senderId !== this.me?.id) {
             await message.fetchSender();
         }
@@ -552,36 +734,33 @@ class WebMaxClient extends EventEmitter {
         };
     }
     /**
-     * Отправка запроса через WebSocket и ожидание ответа
+     * Отправка запроса и ожидание ответа
      */
-    sendAndWait(opcode, payload, cmd = 0, timeout = 20000) {
+    async sendAndWait(opcode, payload, cmd = 0, timeout = 20000) {
+        if (!this.isConnected) {
+            throw new Error('Соединение не установлено');
+        }
+        if (this._useSocketTransport && this._socketTransport) {
+            return await this._socketTransport.sendAndWait(opcode, payload, cmd, timeout);
+        }
         return new Promise((resolve, reject) => {
-            if (!this.isConnected || !this.ws) {
-                reject(new Error('WebSocket не подключен'));
-                return;
-            }
             const message = this.makeMessage(opcode, payload, cmd);
             const seq = message.seq;
-            const pendingRequest = { resolve, reject };
-            this.pendingRequests.set(seq, pendingRequest);
-            // Таймаут для запроса
+            this.pendingRequests.set(seq, { resolve, reject });
             const timeoutId = setTimeout(() => {
                 if (this.pendingRequests.has(seq)) {
                     this.pendingRequests.delete(seq);
                     reject(new Error(`Таймаут запроса (seq: ${seq}, opcode: ${opcode})`));
                 }
             }, timeout);
-            // Сохраняем timeoutId чтобы можно было отменить
-            pendingRequest.timeoutId = timeoutId;
-            // Отладочное логирование (раскомментируйте при необходимости)
-            // if (opcode !== Opcode.PING) {
-            //   console.log(`📤 Отправка: ${getOpcodeName(opcode)} (seq=${seq})`);
-            // }
-            this.ws.send(JSON.stringify(message));
+            const pending = this.pendingRequests.get(seq);
+            if (pending)
+                pending.timeoutId = timeoutId;
+            this.ws?.send(JSON.stringify(message));
         });
     }
     /**
-     * Отправка сообщения
+     * Отправка сообщения (с уведомлением)
      */
     async sendMessage(options) {
         if (typeof options === 'string') {
@@ -597,13 +776,38 @@ class WebMaxClient extends EventEmitter {
                 attaches: attachments || [],
                 link: replyTo ? { type: 'REPLY', messageId: replyTo } : null
             },
+            notify: true
+        };
+        const response = await this.sendAndWait(Opcode.MSG_SEND, payload);
+        if (response.payload && response.payload.message) {
+            return new Message(response.payload.message, this);
+        }
+        return response.payload;
+    }
+    /**
+     * Отправка сообщения в канал (без уведомления)
+     */
+    async sendMessageChannel(options) {
+        if (typeof options === 'string') {
+            throw new Error('sendMessageChannel требует объект с параметрами: { chatId, text, cid }');
+        }
+        const { chatId, text, cid, replyTo, attachments } = options;
+        const payload = {
+            chatId: chatId,
+            message: {
+                text: text || '',
+                cid: cid || Date.now(),
+                elements: [],
+                attaches: attachments || [],
+                link: replyTo ? { type: 'REPLY', messageId: replyTo } : null
+            },
             notify: false
         };
         const response = await this.sendAndWait(Opcode.MSG_SEND, payload);
-        if (isRecord(response.payload) && isRecord(response.payload.message)) {
+        if (response.payload && response.payload.message) {
             return new Message(response.payload.message, this);
         }
-        return response.payload || null;
+        return response.payload;
     }
     /**
      * Редактирование сообщения
@@ -618,10 +822,10 @@ class WebMaxClient extends EventEmitter {
             attaches: []
         };
         const response = await this.sendAndWait(Opcode.MSG_EDIT, payload);
-        if (isRecord(response.payload) && isRecord(response.payload.message)) {
+        if (response.payload && response.payload.message) {
             return new Message(response.payload.message, this);
         }
-        return response.payload || null;
+        return response.payload;
     }
     /**
      * Удаление сообщения
@@ -637,53 +841,6 @@ class WebMaxClient extends EventEmitter {
         return true;
     }
     /**
-     * Получить ссылку для скачивания файла (opcode 88)
-     */
-    async getFileLink(params) {
-        const payload = {
-            fileId: params.fileId,
-            chatId: params.chatId,
-            messageId: params.messageId,
-        };
-        const response = await this.sendAndWait(Opcode.FILE_DOWNLOAD, payload);
-        if (!isRecord(response.payload)) {
-            throw new Error('Некорректный ответ от сервера: payload отсутствует');
-        }
-        if (response.payload.error) {
-            throw new Error(`File link error: ${JSON.stringify(response.payload.error)}`);
-        }
-        const url = response.payload.url;
-        if (typeof url !== 'string' || !url) {
-            throw new Error('Не удалось получить ссылку для скачивания файла');
-        }
-        const unsafe = typeof response.payload.unsafe === 'boolean' ? response.payload.unsafe : false;
-        return { url, unsafe };
-    }
-    /**
-     * Скачать файл по ссылке и вернуть Buffer или путь к файлу
-     */
-    async downloadFile(params) {
-        const { output, ...linkParams } = params;
-        const { url, unsafe } = await this.getFileLink(linkParams);
-        const response = await fetch(url);
-        if (!response.ok) {
-            throw new Error(`Ошибка скачивания файла: ${response.status} ${response.statusText}`);
-        }
-        if (output) {
-            const outputPath = path.resolve(output);
-            const dirPath = path.dirname(outputPath);
-            await mkdir(dirPath, { recursive: true });
-            if (!response.body) {
-                throw new Error('Ответ не содержит тела для скачивания файла');
-            }
-            const webStream = response.body;
-            await pipeline(Readable.fromWeb(webStream), createWriteStream(outputPath));
-            return { path: outputPath, url, unsafe };
-        }
-        const data = await response.arrayBuffer();
-        return Buffer.from(data);
-    }
-    /**
      * Получение информации о пользователе по ID
      */
     async getUser(userId) {
@@ -691,18 +848,14 @@ class WebMaxClient extends EventEmitter {
             contactIds: [userId]
         };
         const response = await this.sendAndWait(Opcode.CONTACT_INFO, payload);
-        if (isRecord(response.payload) && Array.isArray(response.payload.contacts) && response.payload.contacts.length > 0) {
-            const contact = response.payload.contacts[0];
-            if (!isRecord(contact)) {
-                return null;
-            }
-            // Преобразуем структуру контакта в понятный User формат
-            const names = Array.isArray(contact.names) ? contact.names : [];
-            const name = names.length > 0 && isRecord(names[0]) ? names[0] : {};
+        if (response.payload && response.payload.contacts && response.payload.contacts?.length) {
+            const contact = response.payload.contacts?.[0];
+            const name = contact.names;
+            const primaryName = name && name.length > 0 ? name[0] : {};
             const userData = {
                 id: contact.id,
-                firstname: (typeof name.firstName === 'string' && name.firstName) || (typeof name.name === 'string' && name.name) || '',
-                lastname: (typeof name.lastName === 'string' && name.lastName) || '',
+                firstname: primaryName.firstName || primaryName.name || '',
+                lastname: primaryName.lastName || '',
                 phone: contact.phone,
                 avatar: contact.baseUrl || contact.baseRawUrl,
                 photoId: contact.photoId,
@@ -716,19 +869,23 @@ class WebMaxClient extends EventEmitter {
      * Получение списка чатов
      */
     async getChats(marker = 0) {
+        if (this._useSocketTransport && this._socketTransport) {
+            return await this._socketTransport.getChats(marker);
+        }
         const payload = {
             marker: marker
         };
         const response = await this.sendAndWait(Opcode.CHATS_LIST, payload);
-        if (isRecord(response.payload) && Array.isArray(response.payload.chats)) {
-            return response.payload.chats;
-        }
-        return [];
+        return response.payload?.chats || [];
     }
     /**
      * Получение истории сообщений
      */
     async getHistory(chatId, from = Date.now(), backward = 200, forward = 0) {
+        if (this._useSocketTransport && this._socketTransport) {
+            const messages = await this._socketTransport.getHistory(chatId, from, backward, forward);
+            return messages.map(msg => new Message(msg, this));
+        }
         const payload = {
             chatId: chatId,
             from: from,
@@ -737,56 +894,71 @@ class WebMaxClient extends EventEmitter {
             getMessages: true
         };
         const response = await this.sendAndWait(Opcode.CHAT_HISTORY, payload);
-        const messages = isRecord(response.payload) && Array.isArray(response.payload.messages)
-            ? response.payload.messages
-            : [];
-        return messages.filter(isRecord).map((msg) => new Message(msg, this));
+        const messages = response.payload?.messages || [];
+        return messages.map(msg => new Message(msg, this));
     }
-    async triggerHandlers(eventType, data) {
-        try {
-            switch (eventType) {
-                case EventTypes.START:
-                    for (const handler of this.handlers[EventTypes.START]) {
-                        await handler();
-                    }
-                    break;
-                case EventTypes.DISCONNECT:
-                    for (const handler of this.handlers[EventTypes.DISCONNECT]) {
-                        await handler();
-                    }
-                    break;
-                case EventTypes.MESSAGE:
-                    for (const handler of this.handlers[EventTypes.MESSAGE]) {
-                        await handler(data);
-                    }
-                    break;
-                case EventTypes.MESSAGE_REMOVED:
-                    for (const handler of this.handlers[EventTypes.MESSAGE_REMOVED]) {
-                        await handler(data);
-                    }
-                    break;
-                case EventTypes.CHAT_ACTION:
-                    for (const handler of this.handlers[EventTypes.CHAT_ACTION]) {
-                        await handler(data);
-                    }
-                    break;
-                case EventTypes.ERROR:
-                    for (const handler of this.handlers[EventTypes.ERROR]) {
-                        await handler(data);
-                    }
-                    break;
-                default:
-                    break;
-            }
+    async getFileLink(options) {
+        if (!options || typeof options !== 'object') {
+            throw new Error('getFileLink требует объект с параметрами: { fileId, chatId, messageId }');
         }
-        catch (error) {
-            console.error(`Ошибка в обработчике ${eventType}:`, error);
+        const { fileId, chatId, messageId } = options;
+        if (!fileId || !chatId || !messageId) {
+            throw new Error('getFileLink требует fileId, chatId и messageId');
+        }
+        const response = await this.sendAndWait(Opcode.FILE_DOWNLOAD, { fileId, chatId, messageId });
+        const payload = response.payload || {};
+        if (payload.error) {
+            const msg = payload.localizedMessage || payload.error?.message || JSON.stringify(payload.error);
+            throw new Error(msg);
+        }
+        const link = normalizeFileLinkPayload(payload);
+        if (!link) {
+            throw new Error('Не удалось получить ссылку на файл');
+        }
+        return link;
+    }
+    async downloadFile(options) {
+        if (!options || typeof options !== 'object') {
+            throw new Error('downloadFile требует объект с параметрами: { fileId, chatId, messageId, output? }');
+        }
+        const { output } = options;
+        const link = await this.getFileLink(options);
+        if (output) {
+            if (typeof output !== 'string') {
+                throw new Error('downloadFile: output должен быть строкой пути');
+            }
+            const savedPath = await downloadToFile(link.url, output);
+            return { path: savedPath, url: link.url, unsafe: link.unsafe };
+        }
+        return await fetchBufferFromUrl(link.url);
+    }
+    /**
+     * Выполнение зарегистрированных обработчиков
+     */
+    async triggerHandlers(eventType, data) {
+        const handlers = this.handlers[eventType] || [];
+        for (const handler of handlers) {
+            try {
+                if (data !== undefined) {
+                    await handler(data);
+                }
+                else {
+                    await handler();
+                }
+            }
+            catch (error) {
+                console.error(`Ошибка в обработчике ${eventType}:`, error);
+            }
         }
     }
     /**
      * Остановка клиента
      */
     async stop() {
+        if (this._socketTransport) {
+            await this._socketTransport.close();
+            this._socketTransport = null;
+        }
         if (this.ws) {
             this.ws.close();
             this.ws = null;
@@ -804,5 +976,3 @@ class WebMaxClient extends EventEmitter {
         console.log('Выход выполнен, сессия удалена');
     }
 }
-export default WebMaxClient;
-//# sourceMappingURL=client.js.map

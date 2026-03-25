@@ -1,224 +1,618 @@
-# WebMaxSocket — Node.js client for Max Messenger (ESM + TypeScript)
+# WebMax TS - Node.js Client for Max Messenger
 
-**WebMaxSocket** — async Node.js библиотека для работы с внутренним API мессенджера Max через WebSocket и QR‑код авторизацию. Оригинал: https://github.com/Tellarion/webmaxsocket
+## 📖 Описание / Description
 
-## ✨ Features
+**WebMax TS** — async Node.js библиотека для работы с внутренним API мессенджера Max. Поддерживает **QR-код авторизацию**, **Token авторизацию**, и работу через **WebSocket** (WEB) или **TCP Socket** (IOS/ANDROID). Оригинал: https://github.com/Tellarion/webmaxsocket
 
-- ✅ QR‑код авторизация
-- ✅ WebSocket соединение
-- ✅ Автоматическое сохранение сессий
-- ✅ Отправка, редактирование и удаление сообщений
-- ✅ Event‑driven архитектура
-- ✅ Полная ESM‑сборка + типы TypeScript (`.d.ts`)
+## ✨ Особенности / Features
 
-## 📦 Установка
+- ✅ **QR-код авторизация** / QR code authentication
+- ✅ **Token авторизация** / Token authentication
+- ✅ **Два транспорта:** WebSocket (WEB) и TCP Socket (IOS/ANDROID)
+- ✅ **Автоматическое сохранение сессий** / Automatic session storage
+- ✅ **Автовыбор транспорта** после QR-авторизации (переход на TCP)
+- ✅ **Отправка и получение сообщений** / Send and receive messages
+- ✅ **Редактирование и удаление сообщений** / Edit and delete messages
+- ✅ **Скачивание файлов** / File download helpers
+- ✅ **Event-driven архитектура** / Event-driven architecture
+- ✅ **Обработка входящих уведомлений** / Handle incoming notifications
+- ✅ **TypeScript-first** (типы генерируются из исходников)
+- ✅ **ESM + CJS сборка**
+
+## 📦 Установка / Installation
 
 ```bash
 npm install webmax-ts
 ```
 
-> Пакет поддерживает ESM и CommonJS. Для CommonJS используйте `require`, для TS с `module: commonjs` — обычный `import`.
+## Импорт / Import
 
-## 🚀 Быстрый старт
+### ESM / TypeScript
 
-### JavaScript (ESM)
-
-```js
+```ts
 import { WebMaxClient } from 'webmax-ts'
-
-const client = new WebMaxClient({
-	name: 'my_session',
-	// appVersion по умолчанию: 26.3.9
-})
-
-client.onStart(() => {
-	console.log(`✅ Вошли как: ${client.me?.fullname || 'User'}`)
-})
-
-client.onMessage(async message => {
-	if (message.senderId === client.me?.id) return
-	await message.reply({ text: `Я получил: ${message.text}`, cid: Date.now() })
-})
-
-client.start().catch(console.error)
 ```
 
-### JavaScript (CommonJS)
+### CJS
 
 ```js
 const { WebMaxClient } = require('webmax-ts')
-
-const client = new WebMaxClient({ name: 'my_session' })
-
-client.start().catch(console.error)
 ```
 
-### TypeScript
+### Зависимости для Socket транспорта (IOS/ANDROID)
 
-```ts
-import { WebMaxClient, ChatActions } from 'webmax-ts'
+Для работы с TCP Socket транспортом требуется библиотека `lz4`. Если при установке возникают проблемы с `node-gyp`:
 
-const client = new WebMaxClient({ name: 'my_session' })
-
-client.onStart(() => {
-	console.log('✅ Клиент запущен')
-})
-
-client.onChatAction(action => {
-	console.log(action.type)
-})
-
-client.start().catch(console.error)
+```bash
+npm install lz4 --ignore-scripts
 ```
 
-## 🔐 QR‑авторизация
+**Примечание:** Для обычной QR-авторизации (WEB) дополнительные зависимости не нужны. Socket транспорт используется только после сохранения сессии или при явном указании `deviceType: 'IOS'`/`'ANDROID'`.
 
-При первом запуске в консоли появится QR‑код. Откройте Max на телефоне:
+## 🚀 Быстрый старт / Quick Start
 
-`Настройки → Устройства → Подключить устройство`
+### Базовый пример / Basic Example
 
-После сканирования токен сохраняется автоматически в `sessions/`.
+```javascript
+const { WebMaxClient } = require('webmax-ts')
 
-## 🛡 Рекомендация: использовать реальные параметры WEB-клиента
+async function main() {
+	// Инициализация клиента / Initialize client
+	const client = new WebMaxClient({
+		name: 'my_session', // Имя сессии / Session name
+	})
 
-Чтобы снизить риск срабатывания антифрода, рекомендуется брать `userAgent`-параметры из вашего реального web-клиента Max, а не использовать случайные значения.
+	// Обработчик запуска / Start handler
+	client.onStart(async () => {
+		console.log('✅ Бот запущен!')
+		console.log(`👤 Вы вошли как: ${client.me.fullname}`)
+	})
 
-общая идея:
+	// Обработчик сообщений / Message handler
+	client.onMessage(async message => {
+		// Не отвечаем на свои сообщения / Don't reply to own messages
+		if (message.senderId === client.me.id) return
 
-- профиль должен быть стабильным между перезапусками;
-- `deviceName / osVersion / headerUserAgent / timezone / screen` должны быть реалистичными;
-- чем меньше “скачков” профиля, тем естественнее поведение клиента.
+		console.log(`💬 ${message.getSenderName()}: ${message.text}`)
 
-### как получить параметры из web.max.ru
+		// Автоответ / Auto-reply
+		await message.reply({
+			text: `Привет! Я получил: "${message.text}"`,
+			cid: Date.now(),
+		})
+	})
 
-1. откройте `https://web.max.ru` в браузере (быть авторизованным)
-2. нажмите `F12` (devtools)
-3. перейдите во вкладку **Network**
-4. найдите соединение **WebSocket**
-5. откройте первый исходящий пакет (**Send**)
-6. возьмите необходимые поля из payload.userAgent
+	// Запуск / Start
+	await client.start()
+}
 
-### пример использования
+main().catch(console.error)
+```
 
-```ts
-import { WebMaxClient, UserAgentPayload } from 'webmax-ts'
+### Авторизация / Authentication
 
-const userAgent = new UserAgentPayload({
-	locale: 'ru',
-	deviceLocale: 'ru',
-	osVersion: 'Windows',
-	deviceName: 'Your Browser',
-	headerUserAgent: 'YOUR_REAL_BROWSER_UA',
-	appVersion: '26.3.9',
-	screen: 'YOUR_SCREEN',
-	timezone: 'Europe/Moscow',
-})
+#### Способ 1: QR-код (рекомендуется для первого запуска)
 
+При первом запуске вы увидите QR-код в консоли:
+
+```
+🔐 АВТОРИЗАЦИЯ ЧЕРЕЗ QR-КОД
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 Откройте приложение Max на телефоне
+➡️  Настройки → Устройства → Подключить устройство
+📸 Отсканируйте QR-код
+
+█████████████████████████████
+...
+```
+
+После сканирования:
+
+- Токен и clientSessionId сохраняются автоматически
+- При следующем запуске клиент **автоматически переключится на TCP Socket** для стабильности
+- Повторная авторизация не требуется
+
+#### Способ 2: Token авторизация
+
+Если у вас уже есть токен (от другого сервиса/приложения):
+
+```javascript
 const client = new WebMaxClient({
 	name: 'my_session',
-	userAgent,
+	token: 'An_Sx6HQ9HDiftNkVBNf6Q5PG5D8Oyj...', // Ваш токен
+	configPath: 'config/myconfig.json', // Или из файла
+	saveToken: true,
 })
 
 await client.start()
 ```
 
-## API (кратко)
+Формат конфига (`config/default.json`):
+
+```json
+{
+	"token": "An_Sx6HQ9HDiftNk...",
+	"ua": "Mozilla/5.0 (iPhone...)",
+	"device_type": 2,
+	"deviceType": "IOS"
+}
+```
+
+#### Транспорты
+
+- **WEB** (`deviceType: 'WEB'` или `device_type: 1`) → WebSocket (ws-api.oneme.ru)
+- **IOS** (`deviceType: 'IOS'` или `device_type: 2`) → TCP Socket (api.oneme.ru)
+- **ANDROID** (`deviceType: 'ANDROID'` или `device_type: 3`) → TCP Socket (api.oneme.ru)
+
+Клиент **автоматически выбирает** правильный транспорт на основе сохраненного deviceType.
+
+## API
 
 ### WebMaxClient
 
-```ts
+Основной класс для работы с API Max.
+
+#### Конструктор
+
+```javascript
 const client = new WebMaxClient({
-	name: 'session',
-	phone: '+1234567890',
-	apiUrl: 'wss://ws-api.oneme.ru/websocket',
-	maxReconnectAttempts: 5,
-	reconnectDelay: 3000,
+	name: 'session', // Имя сессии (для сохранения авторизации)
+	token: 'An_Sx6H...', // Токен авторизации (опционально)
+	configPath: 'myconfig', // Путь к config файлу (опционально)
+	deviceType: 'WEB', // Тип устройства: 'WEB', 'IOS', 'ANDROID' (опционально)
+	saveToken: true, // Сохранять токен в сессию (по умолчанию true)
+	debug: false, // Отладочный режим (опционально)
+	apiUrl: 'wss://...', // URL WebSocket API (опционально)
+	maxReconnectAttempts: 5, // Максимальное количество попыток переподключения
+	reconnectDelay: 3000, // Задержка между попытками переподключения (мс)
 })
 ```
 
-Ключевые методы:
+#### Методы
 
-- `start()` — запуск клиента
-- `sendMessage({ chatId, text, cid, replyTo?, attachments? })`
-- `editMessage({ messageId, chatId, text })`
-- `deleteMessage({ messageId, chatId, forMe? })`
-- `getUser(userId)`
-- `getChats(marker?)`
-- `getHistory(chatId, from?, backward?, forward?)`
-- `getFileLink({ fileId, chatId, messageId })`
-- `downloadFile({ fileId, chatId, messageId, output? })`
-- `stop()` / `logout()`
+##### `start()`
 
-### Скачивание файлов
+Запускает клиент и устанавливает соединение.
 
-```ts
-// 1) Получить временную ссылку на файл (opcode 88)
-const link = await client.getFileLink({
-	fileId: 3004252087,
-	chatId: -7254777603972,
-	messageId: '212291254051388603',
+```javascript
+await client.start()
+```
+
+##### `sendMessage(options)`
+
+Отправляет сообщение в чат с уведомлением (notify: true).
+
+```javascript
+const message = await client.sendMessage({
+	chatId: 123,
+	text: 'Привет!',
+	cid: Date.now(),
+	replyTo: null, // ID сообщения для ответа (опционально)
+	attachments: [], // Вложения (опционально)
 })
+```
 
-console.log(link.url, link.unsafe)
+##### `sendMessageChannel(options)`
 
-// 2) Скачать в Buffer (если output не указан)
-const buffer = await client.downloadFile({
-	fileId: 3004252087,
-	chatId: -7254777603972,
-	messageId: '212291254051388603',
+Отправляет сообщение в канал без уведомления (notify: false).
+
+```javascript
+const message = await client.sendMessageChannel({
+	chatId: 123,
+	text: 'Сообщение в канал',
+	cid: Date.now(),
+	replyTo: null, // ID сообщения для ответа (опционально)
+	attachments: [], // Вложения (опционально)
 })
+```
 
-// 3) Скачать в файл (если output указан)
+##### `editMessage(options)`
+
+Редактирует сообщение.
+
+```javascript
+await client.editMessage({
+	messageId: 456,
+	chatId: 123,
+	text: 'Исправленный текст',
+})
+```
+
+##### `deleteMessage(options)`
+
+Удаляет сообщение.
+
+```javascript
+await client.deleteMessage({
+	messageId: 456,
+	chatId: 123,
+})
+```
+
+##### `forwardMessage(options)`
+
+Пересылает сообщение.
+
+```javascript
+await client.forwardMessage({
+	messageId: 456,
+	fromChatId: 123,
+	toChatId: 789,
+})
+```
+
+##### `sendChatAction(chatId, action)`
+
+Отправляет действие в чате (печатает, выбирает стикер и т.д.).
+
+```javascript
+await client.sendChatAction(123, ChatActions.TYPING)
+```
+
+##### `getUser(userId)`
+
+Получает информацию о пользователе.
+
+```javascript
+const user = await client.getUser(123)
+```
+
+##### `getChats(limit, offset)`
+
+Получает список чатов.
+
+```javascript
+const chats = await client.getChats(50, 0)
+```
+
+##### `getHistory(chatId, limit, offset)`
+
+Получает историю сообщений.
+
+```javascript
+const messages = await client.getHistory(123, 50, 0)
+```
+
+##### `getFileLink({ fileId, chatId, messageId })`
+
+Получает прямую ссылку на файл.
+
+```javascript
+const { url, unsafe } = await client.getFileLink({
+	fileId: 999,
+	chatId: 123,
+	messageId: 456,
+})
+```
+
+##### `downloadFile({ fileId, chatId, messageId, output? })`
+
+Скачивает файл. Если указан `output` — сохранит на диск и вернёт `{ path, url, unsafe }`. Если `output` не указан — вернёт `Buffer`.
+
+```javascript
+const buffer = await client.downloadFile({ fileId: 999, chatId: 123, messageId: 456 })
+
 const saved = await client.downloadFile({
-	fileId: 3004252087,
-	chatId: -7254777603972,
-	messageId: '212291254051388603',
-	output: './downloads/report.xlsx',
+	fileId: 999,
+	chatId: 123,
+	messageId: 456,
+	output: './downloads/file.bin',
 })
-// + в onMessage - const buf = await message.downloadFile()
-console.log(saved.path)
 ```
 
-События:
+##### `stop()`
 
-- `onStart(handler)`
-- `onMessage(handler)`
-- `onMessageRemoved(handler)`
-- `onChatAction(handler)`
-- `onError(handler)`
+Останавливает клиент.
+
+```javascript
+await client.stop()
+```
+
+##### `logout()`
+
+Выполняет выход из аккаунта и удаляет сессию.
+
+```javascript
+await client.logout()
+```
+
+#### Обработчики событий
+
+##### `onStart(handler)`
+
+Регистрирует обработчик запуска клиента.
+
+```javascript
+client.onStart(async () => {
+	console.log('Клиент запущен!')
+})
+```
+
+##### `onMessage(handler)`
+
+Регистрирует обработчик новых сообщений.
+
+```javascript
+client.onMessage(async message => {
+	console.log('Новое сообщение:', message.text)
+})
+```
+
+##### `onMessageRemoved(handler)`
+
+Регистрирует обработчик удаленных сообщений.
+
+```javascript
+client.onMessageRemoved(async message => {
+	console.log('Сообщение удалено:', message.text)
+})
+```
+
+##### `onChatAction(handler)`
+
+Регистрирует обработчик действий в чате.
+
+```javascript
+client.onChatAction(async action => {
+	console.log('Действие в чате:', action.type)
+})
+```
+
+##### `onError(handler)`
+
+Регистрирует обработчик ошибок.
+
+```javascript
+client.onError(async error => {
+	console.error('Ошибка:', error.message)
+})
+```
+
+### Message
+
+Класс, представляющий сообщение.
+
+#### Свойства
+
+- `id` - ID сообщения
+- `cid` - Client ID сообщения
+- `chatId` - ID чата
+- `text` - Текст сообщения
+- `senderId` - ID отправителя
+- `sender` - Объект отправителя (User)
+- `timestamp` - Время отправки
+- `type` - Тип сообщения
+- `isEdited` - Флаг редактирования
+- `replyTo` - ID сообщения, на которое это является ответом
+- `attachments` - Вложения
+
+#### Методы
+
+##### `reply(options)`
+
+Отвечает на сообщение.
+
+```javascript
+await message.reply({
+	text: 'Ответ на сообщение',
+	cid: Date.now(),
+})
+```
+
+##### `edit(options)`
+
+Редактирует сообщение.
+
+```javascript
+await message.edit({
+	text: 'Новый текст',
+})
+```
+
+##### `delete()`
+
+Удаляет сообщение.
+
+```javascript
+await message.delete()
+```
+
+##### `forward(chatId)`
+
+Пересылает сообщение.
+
+```javascript
+await message.forward(789)
+```
+
+##### `downloadFile(index?, { output? })`
+
+Скачивает вложение типа FILE из сообщения. Работает только когда `_type === 'FILE'`.
+
+```javascript
+const buffer = await message.downloadFile()
+
+await message.downloadFile(0, { output: './downloads/file.bin' })
+```
+
+### User
+
+Класс, представляющий пользователя.
+
+#### Свойства
+
+- `id` - ID пользователя
+- `firstname` - Имя
+- `lastname` - Фамилия
+- `username` - Имя пользователя
+- `phone` - Номер телефона
+- `avatar` - URL аватара
+- `status` - Статус
+- `bio` - Биография
+- `fullname` - Полное имя (getter)
+
+### ChatAction
+
+Класс, представляющий действие в чате.
+
+#### Свойства
+
+- `type` - Тип действия
+- `chatId` - ID чата
+- `userId` - ID пользователя
+- `user` - Объект пользователя (User)
+- `timestamp` - Время действия
 
 ### Константы
 
-```ts
-import { ChatActions } from 'webmax-ts'
+#### ChatActions
 
-ChatActions.TYPING
-ChatActions.STICKER
-ChatActions.FILE
-ChatActions.RECORDING_VOICE
-ChatActions.RECORDING_VIDEO
+```javascript
+const { ChatActions } = require('webmax-ts')
+
+ChatActions.TYPING // Печатает
+ChatActions.STICKER // Выбирает стикер
+ChatActions.FILE // Отправляет файл
+ChatActions.RECORDING_VOICE // Записывает голосовое
+ChatActions.RECORDING_VIDEO // Записывает видео
 ```
 
-## 🧩 Структура проекта
+### MaxSocketTransport
 
-```text
-webmax/
-├── src/        # TypeScript исходники
-├── dist/       # Сборка + .d.ts
-├── sessions/   # Сохранённые сессии
-├── example.js  # Пример использования (ESM)
+Низкоуровневый TCP Socket транспорт для IOS/ANDROID (api.oneme.ru).
+
+#### Прямое использование (advanced)
+
+```javascript
+const { MaxSocketTransport } = require('webmax-ts')
+
+const transport = new MaxSocketTransport({
+	deviceType: 'IOS',
+	ua: 'Mozilla/5.0 (iPhone...)',
+	deviceId: 'your-device-id',
+	debug: true,
+})
+
+await transport.connect()
+await transport.handshake(userAgentPayload)
+const syncData = await transport.sync(token, userAgent)
+```
+
+**Примечание:** В большинстве случаев используйте `WebMaxClient`, который автоматически выбирает нужный транспорт.
+
+## 📚 Примеры
+
+### Пример 1: QR-авторизация (example.js)
+
+```bash
+node example.js
+```
+
+Первый запуск - QR-авторизация, повторные запуски - автоматический вход через TCP Socket.
+
+### Пример 2: Token авторизация (example-token.js)
+
+```bash
+# Через config файл
+node example-token.js
+node example-token.js myconfig  # config/myconfig.json
+
+# Через переменную окружения
+TOKEN="ваш_токен" node example-token.js
+```
+
+### Пример 3: IOS/ANDROID Socket (example-ios.js)
+
+```bash
+# С готовым конфигом
+node example-ios.js
+
+# С отладкой
+node example-ios.js --debug
+```
+
+## Структура проекта
+
+```
+webmax-ts/
+├── src/
+│   ├── lib/                # Исходники TS
+│   └── index.ts            # Экспорт публичного API
+├── dist/
+│   ├── esm/                # ESM сборка
+│   ├── cjs/                # CJS сборка
+│   └── types/              # Сгенерированные типы
+├── config/                 # Конфигурационные файлы
+│   └── example.json        # Пример конфига
+├── sessions/               # Директория с сохраненными сессиями
+├── example.js              # QR-авторизация
+├── example-token.js        # Token авторизация
+├── example-ios.js          # IOS/ANDROID Socket
 ├── package.json
 └── README.md
 ```
 
-## Ошибки
+## Сессии
 
-Всегда оборачивайте сетевые операции в try/catch:
+Библиотека автоматически сохраняет сессии в директории `sessions/`. При повторном запуске с тем же именем сессии авторизация не требуется.
 
-```ts
+```javascript
+// Создание новой сессии
+const client1 = new WebMaxClient({ name: 'account1', phone: '+1234567890' })
+
+// Использование существующей сессии
+const client2 = new WebMaxClient({ name: 'account1' }) // phone не требуется
+```
+
+## Обработка ошибок
+
+Рекомендуется всегда оборачивать вызовы API в try-catch блоки:
+
+```javascript
 try {
-	await client.sendMessage({ chatId: 123, text: 'Привет!', cid: Date.now() })
+	const message = await client.sendMessage({
+		chatId: 123,
+		text: 'Привет!',
+		cid: Date.now(),
+	})
 } catch (error) {
-	console.error('Ошибка:', (error as Error).message)
+	console.error('Ошибка:', error.message)
 }
 ```
+
+## 🔧 Отладка / Debug
+
+Для включения отладочного вывода:
+
+```javascript
+const client = new WebMaxClient({
+	name: 'my_session',
+	debug: true, // или process.env.DEBUG = '1'
+})
+```
+
+Или через переменную окружения:
+
+```bash
+DEBUG=1 node example.js
+```
+
+## 💡 Важные замечания
+
+1. **TCP Socket после QR-авторизации:** После первой успешной QR-авторизации клиент автоматически сохраняет `clientSessionId` и переключается на TCP Socket транспорт при следующем запуске для повышения стабильности.
+
+2. **Разница между sendMessage и sendMessageChannel:**
+    - `sendMessage()` - отправка с уведомлением (notify: true) для обычных чатов
+    - `sendMessageChannel()` - отправка без уведомления (notify: false) для каналов
+
+3. **Автоматический выбор транспорта:** Клиент автоматически определяет какой транспорт использовать на основе `deviceType` в сессии или config файле.
+
+## 🔗 Ссылки / Links
+
+- [Original GitHub Repository](https://github.com/Tellarion/webmax-ts)
+- [NPM Package](https://www.npmjs.com/package/webmax-ts)
+
+## 📄 Лицензия / License
+
+MIT License - see LICENSE file for details
