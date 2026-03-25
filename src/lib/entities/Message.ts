@@ -1,4 +1,5 @@
 import type WebMaxClient from '../client.js';
+import type { DownloadToFileResult } from '../client.js';
 import User from './User.js';
 
 type UnknownRecord = Record<string, unknown>;
@@ -12,6 +13,10 @@ type MessageReplyOptions = {
 type MessageEditOptions = {
   text?: string;
   [key: string]: unknown;
+};
+
+type MessageDownloadOptions = {
+  output?: string;
 };
 
 const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null;
@@ -28,6 +33,17 @@ const getErrorMessage = (error: unknown): string => {
     return error.message;
   }
   return String(error);
+};
+
+const isFileAttach = (attachment: unknown): attachment is UnknownRecord =>
+  isRecord(attachment) && attachment._type === 'FILE';
+
+const getFileIdFromAttach = (attachment: UnknownRecord): string | number | null => {
+  const fileId = attachment.fileId ?? attachment.file_id ?? attachment.id;
+  if (typeof fileId === 'string' || typeof fileId === 'number') {
+    return fileId;
+  }
+  return null;
 };
 
 /**
@@ -172,6 +188,46 @@ export default class Message {
       messageId: this.id as string | number,
       fromChatId: this.chatId as string | number,
       toChatId: chatId,
+    });
+  }
+
+  /**
+   * Скачать FILE-вложение из сообщения
+   */
+  async downloadFile(index?: number, options: MessageDownloadOptions = {}): Promise<Buffer | DownloadToFileResult> {
+    if (!this.chatId || !this.id) {
+      throw new Error('Невозможно скачать файл: отсутствует chatId или messageId');
+    }
+
+    let attachment: UnknownRecord | null = null;
+
+    if (typeof index === 'number') {
+      const candidate = this.attachments[index];
+      if (!isFileAttach(candidate)) {
+        throw new Error(`Вложение с индексом ${index} не является FILE`);
+      }
+      attachment = candidate;
+    } else {
+      const found = this.attachments.find(isFileAttach);
+      if (found && isRecord(found)) {
+        attachment = found;
+      }
+    }
+
+    if (!attachment) {
+      throw new Error('В сообщении нет FILE-вложений');
+    }
+
+    const fileId = getFileIdFromAttach(attachment);
+    if (!fileId) {
+      throw new Error('Не удалось определить fileId для FILE-вложения');
+    }
+
+    return this.client.downloadFile({
+      fileId,
+      chatId: this.chatId,
+      messageId: this.id,
+      output: options.output,
     });
   }
 

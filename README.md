@@ -145,7 +145,39 @@ const client = new WebMaxClient({
 - `getUser(userId)`
 - `getChats(marker?)`
 - `getHistory(chatId, from?, backward?, forward?)`
+- `getFileLink({ fileId, chatId, messageId })`
+- `downloadFile({ fileId, chatId, messageId, output? })`
 - `stop()` / `logout()`
+
+### Скачивание файлов
+
+```ts
+// 1) Получить временную ссылку на файл (opcode 88)
+const link = await client.getFileLink({
+	fileId: 3004252087,
+	chatId: -7254777603972,
+	messageId: '212291254051388603',
+})
+
+console.log(link.url, link.unsafe)
+
+// 2) Скачать в Buffer (если output не указан)
+const buffer = await client.downloadFile({
+	fileId: 3004252087,
+	chatId: -7254777603972,
+	messageId: '212291254051388603',
+})
+
+// 3) Скачать в файл (если output указан)
+const saved = await client.downloadFile({
+	fileId: 3004252087,
+	chatId: -7254777603972,
+	messageId: '212291254051388603',
+	output: './downloads/report.xlsx',
+})
+// + в onMessage - const buf = await message.downloadFile()
+console.log(saved.path)
+```
 
 События:
 

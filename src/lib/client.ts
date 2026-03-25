@@ -2,6 +2,12 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import qrcode from 'qrcode-terminal';
+import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
+import { pipeline } from 'node:stream/promises';
 import SessionManager from './session.js';
 import { Message, ChatAction, User } from './entities/index.js';
 import { EventTypes } from './constants.js';
@@ -73,6 +79,22 @@ export interface DeleteMessageOptions {
   messageId: string | number | Array<string | number>;
   chatId: string | number;
   forMe?: boolean;
+}
+
+export interface GetFileLinkParams {
+  fileId: string | number;
+  chatId: string | number;
+  messageId: string | number;
+}
+
+export interface DownloadFileParams extends GetFileLinkParams {
+  output?: string;
+}
+
+export interface DownloadToFileResult {
+  path: string;
+  url: string;
+  unsafe: boolean;
 }
 
 const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null;
@@ -843,6 +865,67 @@ class WebMaxClient extends EventEmitter {
     await this.sendAndWait(Opcode.MSG_DELETE, payload);
 
     return true;
+  }
+
+  /**
+   * Получить ссылку для скачивания файла (opcode 88)
+   */
+  async getFileLink(params: GetFileLinkParams): Promise<{ url: string; unsafe: boolean }> {
+    const payload = {
+      fileId: params.fileId,
+      chatId: params.chatId,
+      messageId: params.messageId,
+    };
+
+    const response = await this.sendAndWait(Opcode.FILE_DOWNLOAD, payload);
+
+    if (!isRecord(response.payload)) {
+      throw new Error('Некорректный ответ от сервера: payload отсутствует');
+    }
+
+    if (response.payload.error) {
+      throw new Error(`File link error: ${JSON.stringify(response.payload.error)}`);
+    }
+
+    const url = response.payload.url;
+    if (typeof url !== 'string' || !url) {
+      throw new Error('Не удалось получить ссылку для скачивания файла');
+    }
+
+    const unsafe = typeof response.payload.unsafe === 'boolean' ? response.payload.unsafe : false;
+
+    return { url, unsafe };
+  }
+
+  /**
+   * Скачать файл по ссылке и вернуть Buffer или путь к файлу
+   */
+  async downloadFile(params: DownloadFileParams): Promise<Buffer | DownloadToFileResult> {
+    const { output, ...linkParams } = params;
+    const { url, unsafe } = await this.getFileLink(linkParams);
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Ошибка скачивания файла: ${response.status} ${response.statusText}`);
+    }
+
+    if (output) {
+      const outputPath = path.resolve(output);
+      const dirPath = path.dirname(outputPath);
+      await mkdir(dirPath, { recursive: true });
+
+      if (!response.body) {
+        throw new Error('Ответ не содержит тела для скачивания файла');
+      }
+
+      const webStream = response.body as WebReadableStream<Uint8Array>;
+      await pipeline(Readable.fromWeb(webStream), createWriteStream(outputPath));
+
+      return { path: outputPath, url, unsafe };
+    }
+
+    const data = await response.arrayBuffer();
+    return Buffer.from(data);
   }
 
   /**
